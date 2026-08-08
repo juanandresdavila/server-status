@@ -1,0 +1,17 @@
+# Secretos y config real — nunca al repo, que es público
+config.yaml
+*.env
+env
+
+# Datos
+*.db
+*.db-wal
+*.db-shm
+
+# Binarios
+/server-status
+/dist/
+
+# Herramientas
+.superpowers/
+.DS_Store
