@@ -139,3 +139,56 @@ func TestLogsPideDesdeElCursorYConTimestamps(t *testing.T) {
 		t.Errorf("volvieron %d líneas", len(got))
 	}
 }
+
+// El tail necesita un demux INCREMENTAL: DemuxLogs lee hasta EOF y un follow
+// no termina nunca, así que colgaría para siempre sin emitir una línea.
+func TestSeguirLogsEmiteAMedidaQueLlegan(t *testing.T) {
+	suelta := make(chan struct{})
+	c := servidorFalso(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("follow") != "1" {
+			t.Error("el tail TIENE que usar follow=1")
+		}
+		f, _ := w.(http.Flusher)
+		w.Write(bloque(1, "2026-08-09T12:00:00Z primera\n"))
+		if f != nil {
+			f.Flush()
+		}
+		<-suelta // se queda abierto, como un follow real
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); close(suelta) }()
+
+	out := make(chan docker.LineaLog, 4)
+	go c.SeguirLogs(ctx, "abc", out)
+
+	select {
+	case l := <-out:
+		if l.Linea != "primera" {
+			t.Errorf("Linea = %q", l.Linea)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no emitió nada: el demux está esperando el EOF de un stream que no termina")
+	}
+}
+
+func TestSeguirLogsTerminaAlCancelar(t *testing.T) {
+	suelta := make(chan struct{})
+	c := servidorFalso(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-suelta
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	hecho := make(chan struct{})
+	go func() { c.SeguirLogs(ctx, "abc", make(chan docker.LineaLog, 1)); close(hecho) }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-hecho:
+	case <-time.After(3 * time.Second):
+		t.Fatal("SeguirLogs no volvió al cancelar el contexto")
+	}
+	close(suelta)
+}

@@ -15,6 +15,7 @@ import (
 // Declarada acá y no importada de store, por la misma razón que en rules:
 // deja el panel testeable sin base.
 type Datos interface {
+	BuscarLogs(texto, container string, desde, hasta time.Time, limite int) ([]model.LineaLog, error)
 	UltimasHostSamples(n int) ([]model.HostSample, error)
 	UltimoEstadoContainers() ([]model.ContainerSample, error)
 	UltimoEstadoProbes() ([]model.ProbeResult, error)
@@ -27,7 +28,7 @@ var plantillaPanel = template.Must(template.New("panel").Funcs(template.FuncMap{
 	"gib":  func(b uint64) float64 { return float64(b) / (1024 * 1024 * 1024) },
 	"mib":  func(b uint64) float64 { return float64(b) / (1024 * 1024) },
 	"hora": func(t time.Time) string { return t.Local().Format("02/01 15:04") },
-}).ParseFS(plantillas, "plantillas/panel.html"))
+}).ParseFS(plantillas, "plantillas/panel.html", "plantillas/logs.html", "plantillas/tail.html"))
 
 type vistaPanel struct {
 	Host       model.HostSample
@@ -50,6 +51,57 @@ func NuevoPanel(d Datos) http.Handler {
 		panic("los assets embebidos no tienen el subdirectorio 'assets': " + err.Error())
 	}
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(sub)))
+
+	mux.HandleFunc("GET /logs/tail", func(w http.ResponseWriter, r *http.Request) {
+		c := r.URL.Query().Get("container")
+		if c == "" {
+			http.Error(w, "falta el parámetro container", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		plantillaPanel.ExecuteTemplate(w, "tail.html", struct{ Container string }{c})
+	})
+
+	mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		horas := horasDe(r)
+		hasta := time.Now()
+
+		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"),
+			hasta.Add(-time.Duration(horas)*time.Hour), hasta, 500)
+		if err != nil {
+			http.Error(w, "no se pudieron buscar los logs", http.StatusInternalServerError)
+			return
+		}
+
+		// La lista de containers sale del último estado, no de los logs:
+		// así aparece también uno que todavía no logueó nada.
+		var nombres []string
+		if cs, err := d.UltimoEstadoContainers(); err == nil {
+			for _, c := range cs {
+				nombres = append(nombres, c.Name)
+			}
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		plantillaPanel.ExecuteTemplate(w, "logs.html", struct {
+			Q, Container string
+			Horas        int
+			Containers   []string
+			Lineas       []model.LineaLog
+			Rangos       []struct {
+				Valor int
+				Texto string
+			}
+		}{
+			Q: q.Get("q"), Container: q.Get("container"), Horas: horas,
+			Containers: nombres, Lineas: lineas,
+			Rangos: []struct {
+				Valor int
+				Texto string
+			}{{1, "última hora"}, {24, "24 horas"}, {168, "7 días"}, {720, "30 días"}},
+		})
+	})
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
