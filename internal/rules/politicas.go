@@ -88,8 +88,12 @@ func (p PorUmbral) Aplicar(e EstadoUmbral, valor float64, ahora time.Time, abier
 		// picos separados en el tiempo no se sumen.
 		return EstadoUmbral{}, SinCambio
 	}
+	// El cronómetro arranca en el primer cruce y se evalúa en el mismo paso:
+	// con Sostenido en 0 eso abre de una, que es lo que "cero" tiene que
+	// significar. Anotar y salir obligaba a una segunda observación siempre,
+	// y para una ráfaga de errores —que no se sostiene, pasa— eso era perderla.
 	if e.DesdeCuando.IsZero() {
-		return EstadoUmbral{DesdeCuando: ahora}, SinCambio
+		e.DesdeCuando = ahora
 	}
 	if ahora.Sub(e.DesdeCuando) >= p.Sostenido {
 		return EstadoUmbral{}, Abre

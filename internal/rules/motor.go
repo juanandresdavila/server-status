@@ -32,6 +32,7 @@ type Config struct {
 	Memoria    PorUmbral
 	Swap       PorUmbral
 	Carga      PorUmbral
+	Logs       PorUmbral
 
 	// CiclosParaFlapear es cuántas aperturas en VentanaDeFlapeo hacen falta
 	// para declarar a un sujeto inestable y callarse.
@@ -48,6 +49,8 @@ func Defaults() Config {
 		Memoria:    PorUmbral{Abre: 90, Cierra: 85, Sostenido: 10 * time.Minute},
 		Swap:       PorUmbral{Abre: 25, Cierra: 10, Sostenido: 10 * time.Minute},
 		Carga:      PorUmbral{Abre: 6, Cierra: 4, Sostenido: 10 * time.Minute},
+		// Sostenido en 0: una ráfaga de errores no se "sostiene", pasa.
+		Logs: PorUmbral{Abre: 10, Cierra: 2, Sostenido: 0},
 
 		CiclosParaFlapear: 4,
 		VentanaDeFlapeo:   time.Hour,
@@ -286,4 +289,56 @@ func detalleProbe(r model.ProbeResult) string {
 		return r.Error
 	}
 	return fmt.Sprintf("HTTP %d", r.StatusCode)
+}
+
+// ConteoLog es lo que la ingesta mide por container en la ventana.
+type ConteoLog struct {
+	Coincidencias int
+	Muestra       string
+}
+
+// EvaluarLogs aplica la política POR UMBRAL a las coincidencias de patrón.
+//
+// Reusa PorUmbral tal cual: "cantidad de errores en la ventana" es una métrica
+// como el disco o la carga, y merece la misma histéresis. Sin ella, un
+// servicio que loguea un par de errores por ventana abriría y cerraría sin
+// parar.
+func (m *Motor) EvaluarLogs(conteos map[string]ConteoLog) ([]Cambio, error) {
+	abiertos, err := m.abiertosPorSujeto()
+	if err != nil {
+		return nil, err
+	}
+
+	ahora := m.clk.Now()
+	var cambios []Cambio
+	for container, c := range conteos {
+		sujeto := "logs:" + container
+		inc, estaAbierto := abiertos[sujeto]
+
+		nuevo, tr := m.cfg.Logs.Aplicar(m.umbrales[sujeto], float64(c.Coincidencias), ahora, estaAbierto)
+		m.umbrales[sujeto] = nuevo
+
+		// El detalle lleva el conteo y UNA muestra, nunca todas: una app en
+		// loop de error mandaría mil mensajes y el bot terminaría silenciado.
+		detalle := fmt.Sprintf("%d coincidencias en la ventana", c.Coincidencias)
+		if c.Muestra != "" {
+			detalle += ": " + recortar(c.Muestra, 200)
+		}
+
+		cb, err := m.aplicar(tr, sujeto, "log_pattern", "warning", detalle, inc)
+		if err != nil {
+			return nil, err
+		}
+		if cb != nil {
+			cambios = append(cambios, *cb)
+		}
+	}
+	return cambios, nil
+}
+
+func recortar(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

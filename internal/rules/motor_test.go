@@ -1,6 +1,7 @@
 package rules_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -399,5 +400,71 @@ func TestUnCicloNormalNoDisparaFlapping(t *testing.T) {
 		if c.Incidente.Tipo == "flapping" {
 			t.Error("un solo ciclo disparó el aviso de inestabilidad")
 		}
+	}
+}
+
+// Las alertas de log reusan la política por umbral: 10 coincidencias en la
+// ventana abren, 2 o menos cierran. No hace falta código nuevo de reglas.
+func TestDiezErroresEnLaVentanaAbrenIncidente(t *testing.T) {
+	st := nuevoStoreFalso()
+	reloj := clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC))
+	m := rules.NewMotor(st, reloj, rules.Defaults())
+
+	trs, err := m.EvaluarLogs(map[string]rules.ConteoLog{
+		"comm-tool": {Coincidencias: 12, Muestra: "ERROR conexion rechazada"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trs) != 1 {
+		t.Fatalf("transiciones = %+v, quería 1", trs)
+	}
+	if trs[0].Incidente.Sujeto != "logs:comm-tool" {
+		t.Errorf("sujeto = %q", trs[0].Incidente.Sujeto)
+	}
+	if trs[0].Incidente.Tipo != "log_pattern" {
+		t.Errorf("tipo = %q", trs[0].Incidente.Tipo)
+	}
+	// El mensaje lleva el conteo y UNA muestra, nunca las doce.
+	if !strings.Contains(trs[0].Incidente.Detalle, "12") ||
+		!strings.Contains(trs[0].Incidente.Detalle, "conexion rechazada") {
+		t.Errorf("detalle = %q", trs[0].Incidente.Detalle)
+	}
+}
+
+// Un error suelto no despierta a nadie.
+func TestUnErrorSueltoNoAbreNada(t *testing.T) {
+	st := nuevoStoreFalso()
+	reloj := clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC))
+	m := rules.NewMotor(st, reloj, rules.Defaults())
+
+	for range 10 {
+		trs, _ := m.EvaluarLogs(map[string]rules.ConteoLog{"x": {Coincidencias: 1}})
+		if len(trs) != 0 {
+			t.Fatalf("un error por ventana generó %+v", trs)
+		}
+		reloj.Advance(time.Minute)
+	}
+}
+
+// Histéresis: sin ella, un servicio que loguea un par de errores por ventana
+// abriría y cerraría sin parar.
+func TestBajarACeroCierraPeroDosNoReabre(t *testing.T) {
+	st := nuevoStoreFalso()
+	reloj := clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC))
+	m := rules.NewMotor(st, reloj, rules.Defaults())
+
+	m.EvaluarLogs(map[string]rules.ConteoLog{"x": {Coincidencias: 20, Muestra: "panic"}})
+	reloj.Advance(time.Minute)
+
+	// 5 está entre el cierre (2) y la apertura (10): no cierra todavía.
+	if trs, _ := m.EvaluarLogs(map[string]rules.ConteoLog{"x": {Coincidencias: 5}}); len(trs) != 0 {
+		t.Errorf("cerró con 5 coincidencias, el umbral de cierre es 2: %+v", trs)
+	}
+	reloj.Advance(time.Minute)
+
+	trs, _ := m.EvaluarLogs(map[string]rules.ConteoLog{"x": {Coincidencias: 0}})
+	if len(trs) != 1 || trs[0].Tipo != rules.Cierra {
+		t.Errorf("no cerró con 0 coincidencias: %+v", trs)
 	}
 }
