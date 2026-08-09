@@ -69,8 +69,8 @@ func TestUltimaMigracionAplicada(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 5 {
-		t.Errorf("versión = %d, quería 5", v)
+	if v != 6 {
+		t.Errorf("versión = %d, quería 6", v)
 	}
 }
 
