@@ -158,3 +158,14 @@ func TestBajarDelUmbralDeCierreCierra(t *testing.T) {
 		t.Errorf("transición = %v, quería Cierra con 74%% contra un cierre de 75%%", tr)
 	}
 }
+
+// Sostenido en cero significa "abrí en el primer cruce". Antes exigía una
+// segunda observación, y una ráfaga de errores no se sostiene: pasa.
+func TestSostenidoEnCeroAbreDeUna(t *testing.T) {
+	p := rules.PorUmbral{Abre: 10, Cierra: 2, Sostenido: 0}
+	t0 := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+
+	if _, tr := p.Aplicar(rules.EstadoUmbral{}, 12, t0, false); tr != rules.Abre {
+		t.Errorf("transición = %v, quería Abre en el primer cruce", tr)
+	}
+}
