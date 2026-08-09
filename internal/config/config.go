@@ -20,6 +20,17 @@ type Config struct {
 
 	DockerSocket       string `yaml:"docker_socket"`
 	DockerConcurrencia int    `yaml:"docker_concurrencia"`
+
+	ProbeTimeout time.Duration `yaml:"probe_timeout"`
+	Servicios    []Servicio    `yaml:"servicios"`
+}
+
+// Servicio es una cosa que se puede caer, con la URL que lo prueba y los
+// containers que lo componen.
+type Servicio struct {
+	Nombre     string   `yaml:"nombre"`
+	Probe      string   `yaml:"probe"`
+	Containers []string `yaml:"containers"`
 }
 
 func Load(ruta string) (Config, error) {
@@ -51,8 +62,29 @@ func Load(ruta string) (Config, error) {
 		c.DockerConcurrencia = 8
 	}
 
+	if c.ProbeTimeout == 0 {
+		c.ProbeTimeout = 10 * time.Second
+	}
+
 	if c.Base == "" {
 		return Config{}, errors.New("falta 'base' en la config: es la ruta del archivo SQLite")
 	}
+
+	vistos := map[string]bool{}
+	for i, s := range c.Servicios {
+		if s.Nombre == "" {
+			return Config{}, fmt.Errorf("el servicio %d no tiene 'nombre'", i)
+		}
+		if s.Probe == "" {
+			return Config{}, fmt.Errorf("el servicio %q no tiene 'probe'", s.Nombre)
+		}
+		// El nombre es la identidad del sujeto del incidente: repetirlo haría
+		// que dos servicios compartan incidente sin que se note.
+		if vistos[s.Nombre] {
+			return Config{}, fmt.Errorf("hay dos servicios llamados %q", s.Nombre)
+		}
+		vistos[s.Nombre] = true
+	}
+
 	return c, nil
 }

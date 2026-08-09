@@ -84,3 +84,71 @@ func TestLoadDefaultsDeDocker(t *testing.T) {
 		t.Errorf("DockerConcurrencia = %d, quería 8", c.DockerConcurrencia)
 	}
 }
+
+func TestLoadLeeLosServicios(t *testing.T) {
+	yaml := `
+base: /tmp/x.db
+servicios:
+  - nombre: comm-tool
+    probe: https://comm.example.com/health
+    containers: [comm-tool, comm-tool-db]
+  - nombre: sitio
+    probe: https://example.com/
+`
+	c, err := config.Load(escribir(t, yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Servicios) != 2 {
+		t.Fatalf("hay %d servicios, quería 2", len(c.Servicios))
+	}
+	if c.Servicios[0].Nombre != "comm-tool" {
+		t.Errorf("Nombre = %q", c.Servicios[0].Nombre)
+	}
+	if len(c.Servicios[0].Containers) != 2 {
+		t.Errorf("Containers = %v", c.Servicios[0].Containers)
+	}
+	if len(c.Servicios[1].Containers) != 0 {
+		t.Errorf("un servicio sin containers debería quedar con la lista vacía")
+	}
+}
+
+func TestServicioSinNombreFalla(t *testing.T) {
+	_, err := config.Load(escribir(t, "base: /tmp/x.db\nservicios:\n  - probe: https://example.com/\n"))
+	if err == nil {
+		t.Fatal("quería error con un servicio sin nombre, no hubo")
+	}
+}
+
+func TestServicioSinProbeFalla(t *testing.T) {
+	_, err := config.Load(escribir(t, "base: /tmp/x.db\nservicios:\n  - nombre: x\n"))
+	if err == nil {
+		t.Fatal("quería error con un servicio sin probe, no hubo")
+	}
+}
+
+// Dos servicios con el mismo nombre harían que el sujeto del incidente
+// ('service:x') sea ambiguo y que uno pise al otro en la base.
+func TestServiciosConNombreRepetidoFalla(t *testing.T) {
+	yaml := `
+base: /tmp/x.db
+servicios:
+  - nombre: x
+    probe: https://a.example.com/
+  - nombre: x
+    probe: https://b.example.com/
+`
+	if _, err := config.Load(escribir(t, yaml)); err == nil {
+		t.Fatal("quería error con nombres repetidos, no hubo")
+	}
+}
+
+func TestProbeTimeoutPorDefecto(t *testing.T) {
+	c, err := config.Load(escribir(t, "base: /tmp/x.db\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ProbeTimeout != 10*time.Second {
+		t.Errorf("ProbeTimeout = %v, quería 10s", c.ProbeTimeout)
+	}
+}

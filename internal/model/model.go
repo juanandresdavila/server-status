@@ -30,6 +30,16 @@ type HostSample struct {
 	Uptime time.Duration
 }
 
+// ProbeResult es el resultado de pinchar un servicio una vez.
+type ProbeResult struct {
+	TS         time.Time
+	Servicio   string
+	OK         bool
+	StatusCode int
+	Latencia   time.Duration
+	Error      string
+}
+
 // ContainerSample es el estado de un container en un minuto dado.
 type ContainerSample struct {
 	TS       time.Time
