@@ -30,6 +30,18 @@ type HostSample struct {
 	Uptime time.Duration
 }
 
+// Incidente es algo que está mal, con su sujeto y su ventana de tiempo.
+// Es el único estado persistente del sistema de reglas.
+type Incidente struct {
+	ID        int64
+	Sujeto    string // 'service:comm-tool' | 'host:disk' | 'container:supabase-db'
+	Tipo      string // down | unhealthy | threshold | flapping
+	Severidad string // critical | warning
+	AbiertoEn time.Time
+	CerradoEn *time.Time // nil mientras siga abierto
+	Detalle   string
+}
+
 // ProbeResult es el resultado de pinchar un servicio una vez.
 type ProbeResult struct {
 	TS         time.Time

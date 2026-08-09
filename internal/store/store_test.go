@@ -67,8 +67,8 @@ func TestUltimaMigracionAplicada(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 2 {
-		t.Errorf("versión = %d, quería 2", v)
+	if v != 3 {
+		t.Errorf("versión = %d, quería 3", v)
 	}
 }
 
@@ -218,5 +218,111 @@ func TestUltimasVuelvenDeLaMasNuevaALaMasVieja(t *testing.T) {
 	}
 	if got[2].CPUPctAvg != 2 {
 		t.Errorf("la tercera fila tiene CPU %v, quería 2", got[2].CPUPctAvg)
+	}
+}
+
+func TestAbrirYCerrarIncidente(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+
+	id, err := s.AbrirIncidente(model.Incidente{
+		Sujeto: "service:comm-tool", Tipo: "down", Severidad: "critical",
+		AbiertoEn: ts, Detalle: "3 fallas seguidas",
+	})
+	if err != nil {
+		t.Fatalf("AbrirIncidente: %v", err)
+	}
+
+	abiertos, err := s.IncidentesAbiertos()
+	if err != nil {
+		t.Fatalf("IncidentesAbiertos: %v", err)
+	}
+	if len(abiertos) != 1 {
+		t.Fatalf("hay %d abiertos, quería 1", len(abiertos))
+	}
+	if abiertos[0].Sujeto != "service:comm-tool" || abiertos[0].CerradoEn != nil {
+		t.Errorf("incidente = %+v", abiertos[0])
+	}
+
+	if err := s.CerrarIncidente(id, ts.Add(10*time.Minute)); err != nil {
+		t.Fatalf("CerrarIncidente: %v", err)
+	}
+
+	abiertos, err = s.IncidentesAbiertos()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(abiertos) != 0 {
+		t.Errorf("quedaron %d abiertos después de cerrar", len(abiertos))
+	}
+}
+
+// Esta es la invariante 2 del spec, y la hace cumplir la base, no el código.
+// Si se rompe el índice, "el incidente de este servicio" pasa a depender del
+// orden del SELECT.
+func TestNoSePuedenAbrirDosIncidentesDelMismoSujeto(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+	inc := model.Incidente{
+		Sujeto: "host:disk", Tipo: "threshold", Severidad: "warning",
+		AbiertoEn: ts, Detalle: "82%",
+	}
+
+	if _, err := s.AbrirIncidente(inc); err != nil {
+		t.Fatalf("primer AbrirIncidente: %v", err)
+	}
+	if _, err := s.AbrirIncidente(inc); err == nil {
+		t.Fatal("se abrió un segundo incidente del mismo sujeto: el índice único no está haciendo su trabajo")
+	}
+}
+
+// Cerrado el primero, el mismo sujeto puede volver a abrir. Si el índice
+// fuera sobre el sujeto a secas, esto fallaría.
+func TestElMismoSujetoPuedeReabrirDespuesDeCerrar(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+	inc := model.Incidente{
+		Sujeto: "host:disk", Tipo: "threshold", Severidad: "warning",
+		AbiertoEn: ts, Detalle: "82%",
+	}
+
+	id, err := s.AbrirIncidente(inc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CerrarIncidente(id, ts.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	inc.AbiertoEn = ts.Add(2 * time.Hour)
+	if _, err := s.AbrirIncidente(inc); err != nil {
+		t.Fatalf("no se pudo reabrir después de cerrar: %v", err)
+	}
+}
+
+func TestInsertProbeResults(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+
+	if err := s.InsertProbeResults([]model.ProbeResult{
+		{TS: ts, Servicio: "comm-tool", OK: true, StatusCode: 200, Latencia: 180 * time.Millisecond},
+		{TS: ts, Servicio: "sitio", OK: false, StatusCode: 502, Latencia: 2 * time.Second, Error: "HTTP 502 Bad Gateway"},
+	}); err != nil {
+		t.Fatalf("InsertProbeResults: %v", err)
+	}
+
+	got, err := s.UltimoEstadoProbes()
+	if err != nil {
+		t.Fatalf("UltimoEstadoProbes: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("volvieron %d, quería 2", len(got))
+	}
+	porServicio := map[string]model.ProbeResult{}
+	for _, r := range got {
+		porServicio[r.Servicio] = r
+	}
+	if sitio := porServicio["sitio"]; sitio.OK || sitio.StatusCode != 502 || sitio.Latencia != 2*time.Second {
+		t.Errorf("sitio = %+v", sitio)
 	}
 }
