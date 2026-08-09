@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Estado de los servicios</title>
+{{ .MarcaDeFrescura }}
+<style>
+  :root { color-scheme: light dark; --ok:#1a7f4b; --mal:#c0392b; --borde:#8883; }
+  * { box-sizing: border-box; }
+  body { font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         margin: 0; padding: 3rem 1.25rem; display: flex; justify-content: center; }
+  main { width: 100%; max-width: 34rem; }
+  h1 { font-size: 1.5rem; margin: 0 0 2rem; font-weight: 600; }
+  .titular { font-size: 1.15rem; font-weight: 600; padding: 1rem 1.25rem;
+             border-radius: .6rem; margin-bottom: 2rem;
+             border: 1px solid var(--borde); }
+  .titular.bien { color: var(--ok); }
+  .titular.mal  { color: var(--mal); }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: baseline; gap: .75rem;
+       padding: .85rem .25rem; border-bottom: 1px solid var(--borde); }
+  li .punto { width: .6rem; height: .6rem; border-radius: 50%; flex: none; }
+  li .punto.bien { background: var(--ok); }
+  li .punto.mal  { background: var(--mal); }
+  li .nombre { flex: 1; }
+  li .uptime { font-variant-numeric: tabular-nums; opacity: .65; font-size: .9rem; }
+  footer { margin-top: 2.5rem; font-size: .85rem; opacity: .6; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Estado de los servicios</h1>
+
+  {{ if .TodoBien }}
+    <div class="titular bien">Todos los sistemas operativos</div>
+  {{ else }}
+    <div class="titular mal">Hay un servicio con problemas</div>
+  {{ end }}
+
+  <ul>
+  {{ range .Servicios }}
+    <li>
+      <span class="punto {{ if .OK }}bien{{ else }}mal{{ end }}"></span>
+      <span class="nombre">{{ .Nombre }}</span>
+      <span class="uptime">{{ printf "%.1f" .UptimePct }}% este mes</span>
+    </li>
+  {{ end }}
+  </ul>
+
+  <footer>
+    Actualizado {{ .Generado.Format "02/01/2006 15:04" }} UTC · se refresca solo cada 30 s
+  </footer>
+</main>
+</body>
+</html>
