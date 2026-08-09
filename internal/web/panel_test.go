@@ -15,7 +15,7 @@ type datosFalsos struct{}
 
 func (datosFalsos) UltimasHostSamples(int) ([]model.HostSample, error) {
 	return []model.HostSample{{
-		TS: time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
+		TS:        time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
 		CPUPctAvg: 4.2, CPUPctMax: 18.0,
 		Load1: 0.41, Load5: 0.6, Load15: 0.53,
 		MemUsedBytes: 3_000_000_000, MemTotalBytes: 12_000_000_000,
@@ -58,6 +58,30 @@ func (d datosFalsos) SerieHost(desde, hasta time.Time) ([]model.HostSample, erro
 		})
 	}
 	return out, nil
+}
+
+func (datosFalsos) BuscarLogs(texto, container string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+	return []model.LineaLog{{
+		TS:        time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
+		Container: "comm-tool", Stream: "stderr", Linea: "ERROR conexion rechazada",
+	}}, nil
+}
+
+func TestPaginaDeLogsMuestraResultados(t *testing.T) {
+	cuerpo := pedir(t, "/logs?q=ERROR").Body.String()
+	if !strings.Contains(cuerpo, "conexion rechazada") {
+		t.Errorf("la página de logs no muestra la línea: %q", cuerpo[:min(300, len(cuerpo))])
+	}
+	// El selector de container se arma del último estado, no de los logs.
+	if !strings.Contains(cuerpo, "supabase-db") {
+		t.Error("el selector no lista los containers")
+	}
+}
+
+func TestTailSinContainerNoRenderiza(t *testing.T) {
+	if rec := pedir(t, "/logs/tail"); rec.Code != 400 {
+		t.Errorf("código = %d, quería 400", rec.Code)
+	}
 }
 
 func pedir(t *testing.T, ruta string) *httptest.ResponseRecorder {

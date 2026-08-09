@@ -39,6 +39,11 @@ type Config struct {
 	PanelAddr   string `yaml:"panel_addr"`
 	PortadaPath string `yaml:"portada_path"`
 	URLPublica  string `yaml:"url_publica"`
+
+	// Logs. Patrón vacío apaga las alertas por patrón; retención en 0 usa 30 días.
+	LogsPatron        string `yaml:"logs_patron"`
+	LogsVentanaMin    int    `yaml:"logs_ventana_min"`
+	LogsRetencionDias int    `yaml:"logs_retencion_dias"`
 }
 
 // Servicio es una cosa que se puede caer, con la URL que lo prueba y los
@@ -89,6 +94,15 @@ func Load(ruta string) (Config, error) {
 	}
 	if c.HoraResumen == 0 {
 		c.HoraResumen = 8
+	}
+	if c.LogsPatron == "" {
+		c.LogsPatron = "error OR panic OR fatal"
+	}
+	if c.LogsVentanaMin == 0 {
+		c.LogsVentanaMin = 5
+	}
+	if c.LogsRetencionDias == 0 {
+		c.LogsRetencionDias = 30
 	}
 	if c.Zona == "" {
 		c.Zona = "America/Argentina/Buenos_Aires"
