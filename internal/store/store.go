@@ -75,6 +75,8 @@ var migraciones = []string{
 		error       TEXT    NOT NULL
 	) STRICT;`,
 
+	// El cursor se guarda en NANOSEGUNDOS: con segundos, toda línea con
+	// fracción se re-ingería en cada tick.
 	`CREATE VIRTUAL TABLE logs USING fts5(
 		linea,
 		container UNINDEXED,
@@ -86,6 +88,12 @@ var migraciones = []string{
 		container TEXT    PRIMARY KEY,
 		ultimo_ts INTEGER NOT NULL
 	) STRICT;`,
+
+	// Los cursores de la 0005 se guardaban en SEGUNDOS y ahora se leen en
+	// NANOSEGUNDOS: interpretarlos con la unidad nueva daría 1970 y traería
+	// toda la historia que Docker conserve, de golpe. Se limpian, y cada
+	// container vuelve a arrancar desde ahora.
+	`DELETE FROM log_cursors;`,
 }
 
 type Store struct{ db *sql.DB }
@@ -657,14 +665,14 @@ func (s *Store) CursorDeLog(container string) (time.Time, bool, error) {
 	if err != nil {
 		return time.Time{}, false, err
 	}
-	return time.Unix(ts, 0).UTC(), true, nil
+	return time.Unix(0, ts).UTC(), true, nil
 }
 
 func (s *Store) GuardarCursorDeLog(container string, ts time.Time) error {
 	_, err := s.db.Exec(`
 		INSERT INTO log_cursors (container, ultimo_ts) VALUES (?,?)
 		ON CONFLICT(container) DO UPDATE SET ultimo_ts = excluded.ultimo_ts`,
-		container, ts.Unix())
+		container, ts.UnixNano())
 	return err
 }
 

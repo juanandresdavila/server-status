@@ -435,22 +435,7 @@ func ingerirLogs(ctx context.Context, cli *docker.Client, s *store.Store, cs []d
 			continue
 		}
 
-		ms := make([]model.LineaLog, 0, len(lineas))
-		ultima := desde
-		for _, l := range lineas {
-			// Docker interpreta `since` como "estrictamente mayor" con
-			// resolución de segundo, pero igual conviene filtrar: si dos
-			// líneas caen en el mismo segundo del cursor, volverían a entrar.
-			if !l.TS.After(desde) {
-				continue
-			}
-			ms = append(ms, model.LineaLog{
-				TS: l.TS, Container: c.Name, Stream: l.Stream, Linea: l.Linea,
-			})
-			if l.TS.After(ultima) {
-				ultima = l.TS
-			}
-		}
+		ms, ultima := nuevasLineas(lineas, desde, c.Name)
 		if len(ms) == 0 {
 			continue
 		}
@@ -504,4 +489,30 @@ func (s *seguidorDocker) Seguir(ctx context.Context, nombre string, out chan<- m
 			}
 		}
 	}
+}
+
+// nuevasLineas filtra lo que ya se ingirió y devuelve el cursor nuevo.
+//
+// La comparación es con precisión de NANOSEGUNDOS, y por eso el cursor se
+// persiste igual: guardarlo en segundos hacía que toda línea con fracción
+// —12:00:00.5 contra un cursor 12:00:00— quedara "después" y se re-ingiriera
+// en cada tick, para siempre.
+//
+// Docker igual filtra `since` con resolución de segundo, así que la última
+// tanda vuelve a llegar: este filtro es el que la descarta.
+func nuevasLineas(crudas []docker.LineaLog, desde time.Time, container string) ([]model.LineaLog, time.Time) {
+	out := make([]model.LineaLog, 0, len(crudas))
+	ultima := desde
+	for _, l := range crudas {
+		if !l.TS.After(desde) {
+			continue
+		}
+		out = append(out, model.LineaLog{
+			TS: l.TS, Container: container, Stream: l.Stream, Linea: l.Linea,
+		})
+		if l.TS.After(ultima) {
+			ultima = l.TS
+		}
+	}
+	return out, ultima
 }
