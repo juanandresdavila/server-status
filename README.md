@@ -10,12 +10,14 @@ falta que avisara.
 
 ## Estado
 
-🔄 En construcción. Fases 0 y 1 (scaffold y métricas del host) en curso.
+🔄 En construcción. **Fases 0 y 1 completas y corriendo en el VPS** desde el
+9/8/2026: el servicio muestrea cada 15 s, persiste el agregado por minuto y usa
+1,8 MB de RAM.
 
 | Fase | Qué trae | Estado |
 |---|---|---|
-| 0 | Scaffold, CI, unit de systemd | 🔄 |
-| 1 | Métricas del host → SQLite | 🔄 |
+| 0 | Scaffold, CI, unit de systemd | ✅ |
+| 1 | Métricas del host → SQLite | ✅ |
 | 2 | Estado de containers vía API de Docker | ⏸️ |
 | 3 | Probes de servicios e incidentes | ⏸️ |
 | 4 | Avisos por Telegram | ⏸️ |

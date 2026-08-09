@@ -56,12 +56,15 @@ func sampleUnaVez(col *host.Collector) error {
 	if err != nil {
 		return err
 	}
-	const gb = 1024 * 1024 * 1024
+	// GiB, no GB: son 1024³. df -h y free -h usan la misma unidad, así que los
+	// números se comparan directo. Ojo que df -h redondea para arriba —
+	// 15,01 GiB lo muestra como "16G" — y eso no es una diferencia real.
+	const gib = 1024 * 1024 * 1024
 	fmt.Printf("cpu    %.1f%%\n", m.CPUPctAvg)
 	fmt.Printf("load   %.2f %.2f %.2f\n", m.Load1, m.Load5, m.Load15)
-	fmt.Printf("mem    %.1f / %.1f GB\n", float64(m.MemUsedBytes)/gb, float64(m.MemTotalBytes)/gb)
-	fmt.Printf("swap   %.2f / %.1f GB\n", float64(m.SwapUsedBytes)/gb, float64(m.SwapTotalBytes)/gb)
-	fmt.Printf("disco  %.1f / %.1f GB\n", float64(m.DiskUsedBytes)/gb, float64(m.DiskTotalBytes)/gb)
+	fmt.Printf("mem    %.1f / %.1f GiB\n", float64(m.MemUsedBytes)/gib, float64(m.MemTotalBytes)/gib)
+	fmt.Printf("swap   %.2f / %.1f GiB\n", float64(m.SwapUsedBytes)/gib, float64(m.SwapTotalBytes)/gib)
+	fmt.Printf("disco  %.1f / %.1f GiB\n", float64(m.DiskUsedBytes)/gib, float64(m.DiskTotalBytes)/gib)
 	fmt.Printf("red    rx %d  tx %d\n", m.NetRxBytes, m.NetTxBytes)
 	fmt.Printf("uptime %s\n", m.Uptime.Round(time.Second))
 	return nil
