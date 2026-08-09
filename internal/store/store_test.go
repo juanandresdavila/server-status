@@ -783,3 +783,56 @@ func TestSilencioSeGuardaYSePisa(t *testing.T) {
 		t.Errorf("el segundo silencio no pisó: %v", got)
 	}
 }
+
+// Copiar el archivo vivo de una base con WAL NO da una copia consistente:
+// puede quedar a mitad de una transacción. VACUUM INTO sí, y además compacta.
+func TestVacuumIntoDejaUnaCopiaLegibleYCompleta(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	for i := range 20 {
+		if err := s.InsertHostSample(muestra(base.Add(time.Duration(i)*time.Minute), float64(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.InsertLogs(lineas(base, "app", "una línea de prueba"))
+
+	destino := filepath.Join(t.TempDir(), "copia.db")
+	if err := s.VacuumInto(destino); err != nil {
+		t.Fatalf("VacuumInto: %v", err)
+	}
+
+	copia, err := store.Open(destino)
+	if err != nil {
+		t.Fatalf("la copia no se puede abrir: %v", err)
+	}
+	defer copia.Close()
+
+	got, err := copia.UltimasHostSamples(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 20 {
+		t.Errorf("la copia tiene %d muestras, el original tenía 20", len(got))
+	}
+	ls, err := copia.BuscarLogs("prueba", "", time.Time{}, base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ls) != 1 {
+		t.Errorf("la copia perdió los logs: %d líneas", len(ls))
+	}
+}
+
+// VACUUM INTO falla si el destino ya existe: hay que borrarlo antes o el
+// backup deja de funcionar en silencio a partir del segundo día.
+func TestVacuumIntoPisaLaCopiaAnterior(t *testing.T) {
+	s := abrir(t)
+	s.InsertHostSample(muestra(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC), 1))
+	destino := filepath.Join(t.TempDir(), "copia.db")
+
+	for i := range 3 {
+		if err := s.VacuumInto(destino); err != nil {
+			t.Fatalf("VacuumInto en la vuelta %d: %v", i+1, err)
+		}
+	}
+}

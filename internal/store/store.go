@@ -4,6 +4,8 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -724,4 +726,26 @@ func (s *Store) SilenciadoHasta() (time.Time, error) {
 		return time.Time{}, err
 	}
 	return time.Unix(hasta, 0).UTC(), nil
+}
+
+// VacuumInto deja una copia consistente y compacta de la base.
+//
+// Copiar el archivo vivo NO sirve: con WAL activo puede quedar a mitad de una
+// transacción, y el restic de la Mac mini corre a las 04:30 sin saber nada de
+// eso. VACUUM INTO produce una base íntegra en un archivo aparte, que es lo
+// que el backup se lleva.
+//
+// El destino se borra primero porque VACUUM INTO falla si ya existe: sin eso
+// el backup dejaría de actualizarse en silencio a partir del segundo día.
+func (s *Store) VacuumInto(destino string) error {
+	if err := os.MkdirAll(filepath.Dir(destino), 0o750); err != nil {
+		return err
+	}
+	if err := os.Remove(destino); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("borrar la copia anterior: %w", err)
+	}
+	if _, err := s.db.Exec(`VACUUM INTO ?`, destino); err != nil {
+		return fmt.Errorf("vacuum into %s: %w", destino, err)
+	}
+	return nil
 }
