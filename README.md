@@ -21,7 +21,7 @@ Telegram llegan con la fase 4.
 | 1 | Métricas del host → SQLite | ✅ |
 | 2 | Estado de containers vía API de Docker | ✅ |
 | 3 | Probes de servicios e incidentes | ✅ |
-| 4 | Avisos por Telegram | ⏸️ |
+| 4 | Avisos por Telegram | ✅ |
 | 5 | Panel privado | ⏸️ |
 | 6 | Watchdog externo | ⏸️ |
 | 7 | Portada pública | ⏸️ |
