@@ -31,6 +31,14 @@ type Config struct {
 	CommToolUserID string `yaml:"comm_tool_user_id"`
 	HoraResumen    int    `yaml:"hora_resumen"`
 	Zona           string `yaml:"zona"`
+
+	// Caras web. PanelAddr en vacío apaga el panel; PortadaPath en vacío
+	// apaga la portada. Que se puedan apagar por separado importa: son las
+	// dos partes menos críticas y ninguna puede impedir que el monitor
+	// recolecte y avise.
+	PanelAddr   string `yaml:"panel_addr"`
+	PortadaPath string `yaml:"portada_path"`
+	URLPublica  string `yaml:"url_publica"`
 }
 
 // Servicio es una cosa que se puede caer, con la URL que lo prueba y los

@@ -22,6 +22,8 @@ import (
 	"github.com/juanandresdavila/server-status/internal/prober"
 	"github.com/juanandresdavila/server-status/internal/rules"
 	"github.com/juanandresdavila/server-status/internal/store"
+	"github.com/juanandresdavila/server-status/internal/watchdog"
+	"github.com/juanandresdavila/server-status/internal/web"
 )
 
 func main() {
@@ -165,6 +167,29 @@ func correr(cfg config.Config, col *host.Collector) error {
 		slog.Warn("sin respaldo directo: si comm-tool se cae, ese aviso no sale")
 	}
 
+	// El panel se ata en su propia goroutine y nunca es fatal: la IP de
+	// tailnet puede no existir todavía al arrancar la máquina, y un monitor
+	// sin panel sigue sirviendo — uno muerto no.
+	if cfg.PanelAddr != "" {
+		go func() {
+			if err := web.Escuchar(cfg.PanelAddr, web.NuevoPanel(s), 2*time.Minute); err != nil {
+				slog.Error("el panel no pudo levantar", "err", err)
+			}
+		}()
+	} else {
+		slog.Warn("panel apagado: falta panel_addr en la config")
+	}
+
+	wd := watchdog.New(cfg.URLPublica, os.Getenv("HEALTHCHECKS_PING_URL"), clock.Real{}, 3*time.Minute)
+	if !wd.Configurado() {
+		slog.Warn("watchdog apagado: falta HEALTHCHECKS_PING_URL")
+	}
+
+	portada := time.NewTicker(30 * time.Second)
+	defer portada.Stop()
+	latido := time.NewTicker(5 * time.Minute)
+	defer latido.Stop()
+
 	var a agregador
 	var recordatorio recordatorioDiario
 	slog.Info("server-status arrancó", "base", cfg.Base, "muestreo", cfg.IntervaloMuestreo)
@@ -174,6 +199,20 @@ func correr(cfg config.Config, col *host.Collector) error {
 		case <-ctx.Done():
 			slog.Info("saliendo")
 			return nil
+
+		case <-portada.C:
+			if cfg.PortadaPath == "" {
+				continue
+			}
+			if err := escribirPortada(s, cfg.PortadaPath); err != nil {
+				slog.Error("no se pudo escribir la portada pública", "err", err)
+			}
+
+		case <-latido.C:
+			if err := wd.Latir(ctx); err != nil {
+				// No latir ES la señal: Healthchecks avisa al vencer la gracia.
+				slog.Error("no se pudo latir", "err", err)
+			}
 
 		case <-muestreo.C:
 			m, err := col.Sample()
@@ -299,4 +338,31 @@ func mandarResumen(ctx context.Context, s *store.Store, n *notify.Notificador,
 	// El resumen no es un incidente: no tiene fila en incidents y su id de
 	// entrega es la fecha, que lo hace único por día.
 	return n.AvisarTexto(ctx, "resumen:"+ahora.Format("2006-01-02"), texto)
+}
+
+// escribirPortada arma el EstadoPublico y lo deja en disco para que lo sirva
+// Caddy. Los tipos de web son deliberadamente pobres: la lista blanca se hace
+// con el tipo, no con la disciplina de quien escribe la plantilla.
+func escribirPortada(s *store.Store, destino string) error {
+	probes, err := s.UltimoEstadoProbes()
+	if err != nil {
+		return err
+	}
+	ahora := clock.Real{}.Now()
+	uptime, err := s.UptimePorServicio(ahora.AddDate(0, 0, -30))
+	if err != nil {
+		return err
+	}
+
+	e := web.EstadoPublico{Generado: ahora.UTC()}
+	for _, p := range probes {
+		pct, hayDatos := uptime[p.Servicio]
+		if !hayDatos {
+			pct = 100
+		}
+		e.Servicios = append(e.Servicios, web.ServicioPublico{
+			Nombre: p.Servicio, OK: p.OK, UptimePct: pct,
+		})
+	}
+	return web.EscribirPublica(destino, e)
 }
