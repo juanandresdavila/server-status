@@ -29,7 +29,14 @@ type Notificador struct {
 	respaldo  Canal
 	store     Store
 	clk       clock.Clock
+
+	// silencioHasta lo pone el comando /silenciar. Solo tapa los warning:
+	// silenciar no puede esconder que se cayó un servicio.
+	silencioHasta time.Time
 }
+
+// SilenciarHasta calla los avisos no críticos hasta un momento dado.
+func (n *Notificador) SilenciarHasta(t time.Time) { n.silencioHasta = t }
 
 func NewNotificador(principal, respaldo Canal, s Store, clk clock.Clock) *Notificador {
 	return &Notificador{principal: principal, respaldo: respaldo, store: s, clk: clk}
@@ -39,6 +46,13 @@ func NewNotificador(principal, respaldo Canal, s Store, clk clock.Clock) *Notifi
 // resto en AvisarTexto.
 func (n *Notificador) Avisar(ctx context.Context, a model.Aviso) error {
 	ahora := n.clk.Now()
+
+	// Durante el silencio los warning no se mandan pero SÍ se marcan: sin eso
+	// se acumularían y se vomitarían todos juntos al vencer.
+	if a.Incidente.Severidad != "critical" && ahora.Before(n.silencioHasta) {
+		slog.Info("aviso silenciado", "delivery", a.DeliveryID, "hasta", n.silencioHasta)
+		return n.store.MarcarEnviado(a.DeliveryID, ahora, "silenciado", "")
+	}
 
 	if ahora.Sub(momentoDe(a)) > VentanaDeVigencia {
 		slog.Warn("aviso vencido, no se manda", "delivery", a.DeliveryID)
