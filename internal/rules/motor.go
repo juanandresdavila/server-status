@@ -15,6 +15,7 @@ type Store interface {
 	IncidentesAbiertos() ([]model.Incidente, error)
 	AbrirIncidente(model.Incidente) (int64, error)
 	CerrarIncidente(id int64, cuando time.Time) error
+	CiclosEnVentana(sujeto string, desde time.Time) (int, error)
 }
 
 // Cambio es una transición ya aplicada. El plan 3 lo convierte en un mensaje.
@@ -31,6 +32,12 @@ type Config struct {
 	Memoria    PorUmbral
 	Swap       PorUmbral
 	Carga      PorUmbral
+
+	// CiclosParaFlapear es cuántas aperturas en VentanaDeFlapeo hacen falta
+	// para declarar a un sujeto inestable y callarse.
+	CiclosParaFlapear int
+	VentanaDeFlapeo   time.Duration
+	SilencioPorFlapeo time.Duration
 }
 
 func Defaults() Config {
@@ -41,6 +48,10 @@ func Defaults() Config {
 		Memoria:    PorUmbral{Abre: 90, Cierra: 85, Sostenido: 10 * time.Minute},
 		Swap:       PorUmbral{Abre: 25, Cierra: 10, Sostenido: 10 * time.Minute},
 		Carga:      PorUmbral{Abre: 6, Cierra: 4, Sostenido: 10 * time.Minute},
+
+		CiclosParaFlapear: 4,
+		VentanaDeFlapeo:   time.Hour,
+		SilencioPorFlapeo: time.Hour,
 	}
 }
 
@@ -56,15 +67,18 @@ type Motor struct {
 	cfg      Config
 	conteos  map[string]Contador
 	umbrales map[string]EstadoUmbral
+	// silenciados dice hasta cuándo un sujeto está callado por rebotar.
+	silenciados map[string]time.Time
 }
 
 func NewMotor(s Store, clk clock.Clock, cfg Config) *Motor {
 	return &Motor{
-		store:    s,
-		clk:      clk,
-		cfg:      cfg,
-		conteos:  map[string]Contador{},
-		umbrales: map[string]EstadoUmbral{},
+		store:       s,
+		clk:         clk,
+		cfg:         cfg,
+		conteos:     map[string]Contador{},
+		umbrales:    map[string]EstadoUmbral{},
+		silenciados: map[string]time.Time{},
 	}
 }
 
@@ -145,30 +159,119 @@ func (m *Motor) EvaluarHost(s model.HostSample) ([]Cambio, error) {
 	return cambios, nil
 }
 
-// aplicar persiste la transición. Devuelve nil si no hubo ninguna.
+// aplicar persiste la transición. Devuelve nil si no hubo ninguna, o si el
+// sujeto está silenciado por rebotar demasiado.
+//
+// Importante: el incidente se abre y se cierra en la base IGUAL cuando el
+// sujeto está silenciado. El estado tiene que seguir siendo verdadero; lo que
+// se suprime es el mensaje, no el registro.
 func (m *Motor) aplicar(tr Transicion, sujeto, tipo, severidad, detalle string, abierto model.Incidente) (*Cambio, error) {
+	ahora := m.clk.Now()
+	silenciado := ahora.Before(m.silenciados[sujeto])
+
 	switch tr {
 	case Abre:
 		i := model.Incidente{
 			Sujeto: sujeto, Tipo: tipo, Severidad: severidad,
-			AbiertoEn: m.clk.Now(), Detalle: detalle,
+			AbiertoEn: ahora, Detalle: detalle,
 		}
 		id, err := m.store.AbrirIncidente(i)
 		if err != nil {
 			return nil, err
 		}
 		i.ID = id
+		if silenciado {
+			return nil, nil
+		}
 		return &Cambio{Tipo: Abre, Incidente: i}, nil
 
 	case Cierra:
-		cuando := m.clk.Now()
-		if err := m.store.CerrarIncidente(abierto.ID, cuando); err != nil {
+		if err := m.store.CerrarIncidente(abierto.ID, ahora); err != nil {
 			return nil, err
 		}
-		abierto.CerradoEn = &cuando
+		abierto.CerradoEn = &ahora
+		if silenciado {
+			return nil, nil
+		}
+
+		// Recién al cerrar se puede saber si el sujeto está rebotando: es el
+		// momento en que se completó un ciclo.
+		flap, err := m.chequearFlapeo(sujeto, ahora)
+		if err != nil {
+			return nil, err
+		}
+		if flap != nil {
+			return flap, nil
+		}
 		return &Cambio{Tipo: Cierra, Incidente: abierto}, nil
 	}
 	return nil, nil
+}
+
+// chequearFlapeo devuelve un aviso de inestabilidad —y silencia al sujeto— si
+// abrió demasiadas veces en la ventana. Devuelve nil si está todo normal.
+func (m *Motor) chequearFlapeo(sujeto string, ahora time.Time) (*Cambio, error) {
+	n, err := m.store.CiclosEnVentana(sujeto, ahora.Add(-m.cfg.VentanaDeFlapeo))
+	if err != nil {
+		return nil, err
+	}
+	if n < m.cfg.CiclosParaFlapear {
+		return nil, nil
+	}
+
+	m.silenciados[sujeto] = ahora.Add(m.cfg.SilencioPorFlapeo)
+
+	// El aviso de flapeo NO se persiste como incidente: el sujeto ya tiene su
+	// historial de incidentes reales y abrir otro chocaría con
+	// incidentes_abierto_unico. El id de entrega sale del timestamp, que no
+	// colisiona con los ids autoincrementales de la tabla.
+	return &Cambio{Tipo: Abre, Incidente: model.Incidente{
+		ID: ahora.Unix(), Sujeto: sujeto, Tipo: "flapping", Severidad: "warning",
+		AbiertoEn: ahora,
+		Detalle: fmt.Sprintf("%d caídas en %s — me callo por %s",
+			n, m.cfg.VentanaDeFlapeo, m.cfg.SilencioPorFlapeo),
+	}}, nil
+}
+
+// EvaluarContainers aplica la política por conteo a cada container.
+//
+// Un container sano es uno corriendo cuyo healthcheck no falla. 'none' cuenta
+// como sano: la mayoría no declara healthcheck y no tenerlo no es una falla.
+// 'starting' también, porque es transitorio.
+func (m *Motor) EvaluarContainers(cs []model.ContainerSample) ([]Cambio, error) {
+	abiertos, err := m.abiertosPorSujeto()
+	if err != nil {
+		return nil, err
+	}
+
+	var cambios []Cambio
+	for _, c := range cs {
+		sujeto := "container:" + c.Name
+		inc, estaAbierto := abiertos[sujeto]
+
+		ok, tipo, detalle := saludContainer(c)
+		nuevo, tr := m.cfg.Containers.Aplicar(m.conteos[sujeto], ok, estaAbierto)
+		m.conteos[sujeto] = nuevo
+
+		cb, err := m.aplicar(tr, sujeto, tipo, "warning", detalle, inc)
+		if err != nil {
+			return nil, err
+		}
+		if cb != nil {
+			cambios = append(cambios, *cb)
+		}
+	}
+	return cambios, nil
+}
+
+func saludContainer(c model.ContainerSample) (ok bool, tipo, detalle string) {
+	if c.State != "running" {
+		return false, "down", "estado " + c.State
+	}
+	if c.Health == "unhealthy" {
+		return false, "unhealthy", "healthcheck fallando"
+	}
+	return true, "down", "corriendo"
 }
 
 func pct(usado, total uint64) float64 {

@@ -12,9 +12,10 @@ import (
 // storeFalso implementa lo mínimo que el motor necesita, para testear la
 // lógica sin base.
 type storeFalso struct {
-	abiertos map[string]model.Incidente
-	proximo  int64
-	cerrados []int64
+	abiertos  map[string]model.Incidente
+	historial []model.Incidente
+	proximo   int64
+	cerrados  []int64
 }
 
 func nuevoStoreFalso() *storeFalso {
@@ -33,6 +34,7 @@ func (s *storeFalso) AbrirIncidente(i model.Incidente) (int64, error) {
 	i.ID = s.proximo
 	s.proximo++
 	s.abiertos[i.Sujeto] = i
+	s.historial = append(s.historial, i)
 	return i.ID, nil
 }
 
@@ -223,5 +225,179 @@ func TestDosServiciosCaidosDanDosIncidentes(t *testing.T) {
 	}
 	if !sujetos["service:comm-tool"] || !sujetos["service:sitio"] {
 		t.Errorf("sujetos = %v", sujetos)
+	}
+}
+
+func (s *storeFalso) CiclosEnVentana(sujeto string, desde time.Time) (int, error) {
+	n := 0
+	for _, i := range s.historial {
+		if i.Sujeto == sujeto && !i.AbiertoEn.Before(desde) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func TestContainerCaidoAbreIncidente(t *testing.T) {
+	st := nuevoStoreFalso()
+	reloj := clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC))
+	m := rules.NewMotor(st, reloj, rules.Defaults())
+
+	muerto := []model.ContainerSample{
+		{Name: "supabase-db", State: "exited", Health: "none"},
+	}
+
+	var ultimas []rules.Cambio
+	for range 3 {
+		ultimas, _ = m.EvaluarContainers(muerto)
+		reloj.Advance(time.Minute)
+	}
+
+	if len(ultimas) != 1 {
+		t.Fatalf("transiciones = %+v, quería 1", ultimas)
+	}
+	if ultimas[0].Incidente.Sujeto != "container:supabase-db" {
+		t.Errorf("sujeto = %q", ultimas[0].Incidente.Sujeto)
+	}
+	if ultimas[0].Incidente.Tipo != "down" {
+		t.Errorf("tipo = %q, quería down", ultimas[0].Incidente.Tipo)
+	}
+}
+
+// Un container unhealthy está corriendo pero su healthcheck falla. Es un
+// problema distinto de estar caído y se reporta como tal.
+func TestContainerUnhealthyAbreIncidenteDeOtroTipo(t *testing.T) {
+	st := nuevoStoreFalso()
+	reloj := clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC))
+	m := rules.NewMotor(st, reloj, rules.Defaults())
+
+	enfermo := []model.ContainerSample{
+		{Name: "comm-tool-db", State: "running", Health: "unhealthy"},
+	}
+
+	var ultimas []rules.Cambio
+	for range 3 {
+		ultimas, _ = m.EvaluarContainers(enfermo)
+		reloj.Advance(time.Minute)
+	}
+
+	if len(ultimas) != 1 || ultimas[0].Incidente.Tipo != "unhealthy" {
+		t.Fatalf("transiciones = %+v, quería un unhealthy", ultimas)
+	}
+}
+
+// 'starting' es transitorio: un container que arranca no está roto.
+func TestContainerStartingNoAbreNada(t *testing.T) {
+	st := nuevoStoreFalso()
+	reloj := clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC))
+	m := rules.NewMotor(st, reloj, rules.Defaults())
+
+	arrancando := []model.ContainerSample{
+		{Name: "x", State: "running", Health: "starting"},
+	}
+
+	for range 5 {
+		trs, _ := m.EvaluarContainers(arrancando)
+		if len(trs) != 0 {
+			t.Fatalf("un container 'starting' generó %+v", trs)
+		}
+		reloj.Advance(time.Minute)
+	}
+}
+
+func TestContainersSanosNoGeneranNada(t *testing.T) {
+	st := nuevoStoreFalso()
+	reloj := clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC))
+	m := rules.NewMotor(st, reloj, rules.Defaults())
+
+	sanos := []model.ContainerSample{
+		{Name: "a", State: "running", Health: "healthy"},
+		{Name: "b", State: "running", Health: "none"},
+	}
+
+	for range 10 {
+		trs, _ := m.EvaluarContainers(sanos)
+		if len(trs) != 0 {
+			t.Fatalf("containers sanos generaron %+v", trs)
+		}
+		reloj.Advance(time.Minute)
+	}
+}
+
+// El escenario que rompe la política "uno al caer, uno al recuperarse":
+// un servicio que rebota seis veces son doce mensajes.
+func TestRebotarSeisVecesTerminaEnSilencio(t *testing.T) {
+	st := nuevoStoreFalso()
+	reloj := clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC))
+	m := rules.NewMotor(st, reloj, rules.Defaults())
+
+	caido := []model.ProbeResult{{Servicio: "x", OK: false, Error: "502"}}
+	sano := []model.ProbeResult{{Servicio: "x", OK: true, StatusCode: 200}}
+
+	mensajes := 0
+	huboFlapping := false
+	contar := func(trs []rules.Cambio) {
+		mensajes += len(trs)
+		for _, c := range trs {
+			if c.Incidente.Tipo == "flapping" {
+				huboFlapping = true
+			}
+		}
+	}
+
+	for ciclo := range 6 {
+		for range 3 {
+			trs, err := m.EvaluarProbes(caido)
+			if err != nil {
+				t.Fatalf("ciclo %d: %v", ciclo, err)
+			}
+			contar(trs)
+			reloj.Advance(time.Minute)
+		}
+		for range 2 {
+			trs, _ := m.EvaluarProbes(sano)
+			contar(trs)
+			reloj.Advance(time.Minute)
+		}
+	}
+
+	if !huboFlapping {
+		t.Error("seis ciclos en media hora y nunca emitió el aviso de inestabilidad")
+	}
+	// Sin amortiguación serían 12.
+	if mensajes > 9 {
+		t.Errorf("se emitieron %d mensajes en 6 rebotes: la amortiguación no frena", mensajes)
+	}
+}
+
+// Un solo ciclo no dispara nada raro: la amortiguación no puede tapar
+// el caso normal.
+func TestUnCicloNormalNoDisparaFlapping(t *testing.T) {
+	st := nuevoStoreFalso()
+	reloj := clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC))
+	m := rules.NewMotor(st, reloj, rules.Defaults())
+
+	caido := []model.ProbeResult{{Servicio: "x", OK: false, Error: "502"}}
+	sano := []model.ProbeResult{{Servicio: "x", OK: true, StatusCode: 200}}
+
+	var todas []rules.Cambio
+	for range 3 {
+		trs, _ := m.EvaluarProbes(caido)
+		todas = append(todas, trs...)
+		reloj.Advance(time.Minute)
+	}
+	for range 2 {
+		trs, _ := m.EvaluarProbes(sano)
+		todas = append(todas, trs...)
+		reloj.Advance(time.Minute)
+	}
+
+	if len(todas) != 2 {
+		t.Fatalf("un ciclo normal dio %d mensajes, quería 2", len(todas))
+	}
+	for _, c := range todas {
+		if c.Incidente.Tipo == "flapping" {
+			t.Error("un solo ciclo disparó el aviso de inestabilidad")
+		}
 	}
 }
