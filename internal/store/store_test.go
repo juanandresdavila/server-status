@@ -3,6 +3,7 @@ package store_test
 import (
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,8 +69,8 @@ func TestUltimaMigracionAplicada(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 4 {
-		t.Errorf("versión = %d, quería 4", v)
+	if v != 5 {
+		t.Errorf("versión = %d, quería 5", v)
 	}
 }
 
@@ -573,5 +574,162 @@ func TestUptimeSinDatosDaCien(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("sin mediciones devolvió %v, quería un mapa vacío", got)
+	}
+}
+
+func lineas(base time.Time, cont string, textos ...string) []model.LineaLog {
+	var out []model.LineaLog
+	for i, t := range textos {
+		out = append(out, model.LineaLog{
+			TS: base.Add(time.Duration(i) * time.Second), Container: cont,
+			Stream: "stdout", Linea: t,
+		})
+	}
+	return out
+}
+
+func TestInsertLogsYBusquedaPorTexto(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+
+	if err := s.InsertLogs(lineas(base, "comm-tool",
+		"servidor escuchando en :3000",
+		"ERROR conexion rechazada",
+		"peticion procesada ok")); err != nil {
+		t.Fatalf("InsertLogs: %v", err)
+	}
+
+	got, err := s.BuscarLogs("ERROR", "", time.Time{}, base.Add(time.Hour), 50)
+	if err != nil {
+		t.Fatalf("BuscarLogs: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("volvieron %d líneas, quería 1", len(got))
+	}
+	if got[0].Container != "comm-tool" || !strings.Contains(got[0].Linea, "rechazada") {
+		t.Errorf("got = %+v", got[0])
+	}
+}
+
+func TestBusquedaPorPrefijo(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	s.InsertLogs(lineas(base, "x", "conexion rechazada"))
+
+	got, err := s.BuscarLogs("conex*", "", time.Time{}, base.Add(time.Hour), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("el prefijo no matcheó: %d líneas", len(got))
+	}
+}
+
+func TestBusquedaFiltraPorContainer(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	s.InsertLogs(lineas(base, "uno", "mismo texto"))
+	s.InsertLogs(lineas(base, "dos", "mismo texto"))
+
+	got, err := s.BuscarLogs("texto", "uno", time.Time{}, base.Add(time.Hour), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Container != "uno" {
+		t.Errorf("el filtro por container no anduvo: %+v", got)
+	}
+}
+
+// La invariante 11: un paréntesis suelto en el buscador no puede romper la
+// consulta con un error de sintaxis de FTS5.
+func TestBuscarConTextoRaroNoExplota(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	s.InsertLogs(lineas(base, "x", "algo"))
+
+	for _, raro := range []string{"(", `"`, "AND", "*", "a OR", "^%$#", "NEAR(", ")"} {
+		if _, err := s.BuscarLogs(raro, "", time.Time{}, base.Add(time.Hour), 50); err != nil {
+			t.Errorf("BuscarLogs(%q) devolvió error: %v", raro, err)
+		}
+	}
+}
+
+// Sin texto devuelve las últimas, que es lo que muestra el panel al entrar.
+func TestSinTextoDevuelveLasUltimas(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	s.InsertLogs(lineas(base, "x", "una", "dos", "tres"))
+
+	got, err := s.BuscarLogs("", "", time.Time{}, base.Add(time.Hour), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("volvieron %d, quería 2 por el límite", len(got))
+	}
+	// Más nuevas primero.
+	if got[0].Linea != "tres" {
+		t.Errorf("la primera es %q, quería 'tres'", got[0].Linea)
+	}
+}
+
+// El cursor es lo que hace que un reinicio no repita ni pierda líneas.
+func TestCursorSobreviveYAvanza(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+
+	_, hay, err := s.CursorDeLog("comm-tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hay {
+		t.Error("dice tener cursor de un container que nunca se leyó")
+	}
+
+	if err := s.GuardarCursorDeLog("comm-tool", ts); err != nil {
+		t.Fatal(err)
+	}
+	got, hay, err := s.CursorDeLog("comm-tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hay || !got.Equal(ts) {
+		t.Errorf("cursor = %v (hay=%v), quería %v", got, hay, ts)
+	}
+}
+
+func TestRetencionBorraLoViejoYDejaLoNuevo(t *testing.T) {
+	s := abrir(t)
+	ahora := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	s.InsertLogs(lineas(ahora.AddDate(0, 0, -40), "x", "vieja"))
+	s.InsertLogs(lineas(ahora, "x", "nueva"))
+
+	if err := s.BorrarLogsAnterioresA(ahora.AddDate(0, 0, -30)); err != nil {
+		t.Fatalf("BorrarLogsAnterioresA: %v", err)
+	}
+
+	got, err := s.BuscarLogs("", "", time.Time{}, ahora.Add(time.Hour), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Linea != "nueva" {
+		t.Errorf("quedaron %+v, quería solo la nueva", got)
+	}
+}
+
+func TestConteoDeCoincidencias(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	s.InsertLogs(lineas(base, "app", "ERROR uno", "ok", "ERROR dos", "ERROR tres"))
+
+	n, muestra, err := s.ContarCoincidencias("app", "ERROR", base.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("ContarCoincidencias: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("conteo = %d, quería 3", n)
+	}
+	if !strings.Contains(muestra, "ERROR") {
+		t.Errorf("muestra = %q", muestra)
 	}
 }

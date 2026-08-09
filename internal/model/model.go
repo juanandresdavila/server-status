@@ -72,3 +72,11 @@ type ContainerSample struct {
 	CPUPct   float64
 	MemBytes uint64
 }
+
+// LineaLog es una línea de log ya fechada y atribuida a su container.
+type LineaLog struct {
+	TS        time.Time
+	Container string
+	Stream    string // stdout | stderr
+	Linea     string
+}
