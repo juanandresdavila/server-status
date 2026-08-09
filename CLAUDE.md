@@ -173,6 +173,32 @@ a tocarlos todos cada vez que se agrega una.
   repo. `gitleaks` no atrapa ni una casilla ni una IP: no tienen forma de
   credencial. Revisar a mano antes de publicar documentación nueva.
 
+## Avisos: cómo está dado de alta
+
+El camino principal es **comm-tool** y el respaldo es Telegram directo. Los dos
+usan el **mismo bot**, `@serverstatusjaddbot`: comm-tool impone un bot por app
+con el índice `bots_app_channel_unico`, así que el token existe igual y el
+respaldo sale casi gratis.
+
+| Pieza | Dónde |
+|---|---|
+| App en comm-tool | slug `server-status`, bot slug `status` |
+| Destinatario | uuid fijo en `comm_tool_user_id` de la config |
+| Variables en comm-tool | `TELEGRAM_TOKEN_STATUS`, `TELEGRAM_WEBHOOK_SECRET_STATUS`, `DELIVERY_SECRET_STATUS` en `/opt/stacks/comm-tool/comm-tool.env` |
+| Variables acá | `COMM_TOOL_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` en `/etc/server-status/env` |
+
+**El contacto se insertó a mano en `contacts`, sin pasar por `/vincular`.** Es el
+camino que la propia documentación de comm-tool recomienda cuando ya se conoce
+el chat id: el saliente solo necesita el token y un contacto, no el webhook.
+
+**El webhook del bot NO está registrado.** No hace falta hasta la fase 9
+(comandos entrantes), y por eso el `delivery_url` de la app apunta a un
+`ejemplo.invalid` a propósito: si algún día se registra el webhook sin cambiar
+esa URL, los entrantes van a fallar y hay que acordarse de esto.
+
+**`registrar-app.ts` es idempotente**: se corre igual para rotar la API key.
+Guarda el *nombre* de cada variable de entorno, nunca su valor.
+
 ## Operación
 
 Rutas en el servidor:
