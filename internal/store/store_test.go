@@ -475,3 +475,28 @@ func TestCiclosEnVentanaIgnoraLoViejo(t *testing.T) {
 		t.Errorf("ciclos = %d, quería 0: el incidente es de hace 3 horas", n)
 	}
 }
+
+func TestYaEnviado(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+
+	ya, err := s.YaEnviado("resumen:2026-08-09")
+	if err != nil {
+		t.Fatalf("YaEnviado: %v", err)
+	}
+	if ya {
+		t.Error("dice que ya se envió algo que nunca se mandó")
+	}
+
+	if err := s.MarcarEnviado("resumen:2026-08-09", ts, "telegram", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	ya, err = s.YaEnviado("resumen:2026-08-09")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ya {
+		t.Error("dice que no se envió algo que sí se marcó")
+	}
+}

@@ -21,6 +21,7 @@ const VentanaDeVigencia = time.Hour
 // notificador se testea con un doble de tres líneas.
 type Store interface {
 	MarcarEnviado(deliveryID string, cuando time.Time, via, errMsg string) error
+	YaEnviado(deliveryID string) (bool, error)
 }
 
 type Notificador struct {
@@ -53,6 +54,16 @@ func (n *Notificador) Avisar(ctx context.Context, a model.Aviso) error {
 // No marcar nada cuando fallan los dos canales es deliberado: así el aviso
 // sigue pendiente y el tick siguiente lo reintenta.
 func (n *Notificador) AvisarTexto(ctx context.Context, deliveryID, texto string) error {
+	// Antes de mandar, no después: el resumen diario se identifica por la
+	// fecha, así que sin este chequeo cada reinicio del servicio manda otro.
+	ya, err := n.store.YaEnviado(deliveryID)
+	if err != nil {
+		return err
+	}
+	if ya {
+		return nil
+	}
+
 	ahora := n.clk.Now()
 	var fallas []error
 
