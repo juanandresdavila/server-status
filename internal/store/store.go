@@ -186,7 +186,29 @@ func (s *Store) UltimasHostSamples(n int) ([]model.HostSample, error) {
 		return nil, err
 	}
 	defer filas.Close()
+	return escanearHostSamples(filas)
+}
 
+// SerieHost devuelve las muestras de un rango, de la más VIEJA a la más nueva.
+// El orden importa: un gráfico se dibuja hacia adelante en el tiempo.
+func (s *Store) SerieHost(desde, hasta time.Time) ([]model.HostSample, error) {
+	filas, err := s.db.Query(`
+		SELECT ts, cpu_pct_avg, cpu_pct_max, load1, load5, load15,
+		       mem_used_bytes, mem_total_bytes, swap_used_bytes, swap_total_bytes,
+		       disk_used_bytes, disk_total_bytes, net_rx_bytes, net_tx_bytes,
+		       uptime_seconds
+		FROM host_samples WHERE ts >= ? AND ts <= ? ORDER BY ts ASC`,
+		desde.Unix(), hasta.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+	return escanearHostSamples(filas)
+}
+
+// escanearHostSamples lo comparten las dos consultas: son quince columnas y
+// duplicar el escaneo garantiza que un día diverjan.
+func escanearHostSamples(filas *sql.Rows) ([]model.HostSample, error) {
 	var out []model.HostSample
 	for filas.Next() {
 		var (
