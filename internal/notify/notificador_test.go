@@ -258,3 +258,62 @@ func TestNoRemandaLoQueYaSalio(t *testing.T) {
 		t.Errorf("remandó un aviso ya entregado: %v", principal.mandados)
 	}
 }
+
+// Durante el silencio los warnings NO se mandan pero SÍ se marcan: si no, se
+// acumularían y se vomitarían todos juntos al vencer el silencio.
+func TestElSilencioTapaLosWarningsPeroLosMarca(t *testing.T) {
+	principal := &canalFalso{nombre: "commtool", configurado: true}
+	st := nuevoStore()
+
+	n := notify.NewNotificador(principal, nil, st, relojEn("2026-08-09T11:01:00Z"))
+	hasta, _ := time.Parse(time.RFC3339, "2026-08-09T13:00:00Z")
+	n.SilenciarHasta(hasta)
+
+	a := aviso(1, false)
+	a.Incidente.Severidad = "warning"
+
+	if err := n.Avisar(context.Background(), a); err != nil {
+		t.Fatalf("Avisar: %v", err)
+	}
+	if len(principal.mandados) != 0 {
+		t.Error("mandó un warning durante el silencio")
+	}
+	if st.marcados["1:opened"] != "silenciado" {
+		t.Errorf("via = %q, quería silenciado — si no se marca, se acumula", st.marcados["1:opened"])
+	}
+}
+
+// Silenciar no puede tapar que se cayó un servicio.
+func TestElSilencioNoTapaLosCriticos(t *testing.T) {
+	principal := &canalFalso{nombre: "commtool", configurado: true}
+	st := nuevoStore()
+
+	n := notify.NewNotificador(principal, nil, st, relojEn("2026-08-09T11:01:00Z"))
+	hasta, _ := time.Parse(time.RFC3339, "2026-08-09T13:00:00Z")
+	n.SilenciarHasta(hasta)
+
+	if err := n.Avisar(context.Background(), aviso(1, false)); err != nil {
+		t.Fatal(err)
+	}
+	if len(principal.mandados) != 1 {
+		t.Error("el silencio tapó un aviso crítico")
+	}
+}
+
+// Vencido el silencio, todo vuelve a la normalidad.
+func TestSilencioVencidoNoSilenciaNada(t *testing.T) {
+	principal := &canalFalso{nombre: "commtool", configurado: true}
+	st := nuevoStore()
+
+	n := notify.NewNotificador(principal, nil, st, relojEn("2026-08-09T11:01:00Z"))
+	vencido, _ := time.Parse(time.RFC3339, "2026-08-09T10:00:00Z")
+	n.SilenciarHasta(vencido)
+
+	a := aviso(1, false)
+	a.Incidente.Severidad = "warning"
+	n.Avisar(context.Background(), a)
+
+	if len(principal.mandados) != 1 {
+		t.Error("un silencio vencido siguió silenciando")
+	}
+}

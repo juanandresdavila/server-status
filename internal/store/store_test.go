@@ -69,8 +69,8 @@ func TestUltimaMigracionAplicada(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 6 {
-		t.Errorf("versión = %d, quería 6", v)
+	if v != 7 {
+		t.Errorf("versión = %d, quería 7", v)
 	}
 }
 
@@ -731,5 +731,55 @@ func TestConteoDeCoincidencias(t *testing.T) {
 	}
 	if !strings.Contains(muestra, "ERROR") {
 		t.Errorf("muestra = %q", muestra)
+	}
+}
+
+// comm-tool reintenta hasta 5 veces: sin dedupe, un /silenciar se aplicaría
+// cinco veces y el bot contestaría cinco veces.
+func TestUnComandoSeProcesaUnaSolaVez(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+
+	primera, err := s.MarcarComandoProcesado("m1", ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !primera {
+		t.Error("la primera vez dijo que ya estaba procesado")
+	}
+
+	segunda, err := s.MarcarComandoProcesado("m1", ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if segunda {
+		t.Error("el reintento se procesó de nuevo")
+	}
+}
+
+func TestSilencioSeGuardaYSePisa(t *testing.T) {
+	s := abrir(t)
+
+	got, err := s.SilenciadoHasta()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IsZero() {
+		t.Error("sin silencio configurado devolvió algo")
+	}
+
+	hasta := time.Date(2026, 8, 9, 14, 0, 0, 0, time.UTC)
+	if err := s.Silenciar(hasta); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.SilenciadoHasta(); !got.Equal(hasta) {
+		t.Errorf("silencio = %v, quería %v", got, hasta)
+	}
+
+	// Un /silenciar nuevo pisa al anterior, no acumula.
+	otro := hasta.Add(time.Hour)
+	s.Silenciar(otro)
+	if got, _ := s.SilenciadoHasta(); !got.Equal(otro) {
+		t.Errorf("el segundo silencio no pisó: %v", got)
 	}
 }

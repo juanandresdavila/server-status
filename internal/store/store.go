@@ -94,6 +94,16 @@ var migraciones = []string{
 	// toda la historia que Docker conserve, de golpe. Se limpian, y cada
 	// container vuelve a arrancar desde ahora.
 	`DELETE FROM log_cursors;`,
+
+	`CREATE TABLE comandos_procesados (
+		delivery_id  TEXT    PRIMARY KEY,
+		procesado_en INTEGER NOT NULL
+	) STRICT;
+
+	CREATE TABLE silencio (
+		id    INTEGER PRIMARY KEY CHECK (id = 1),
+		hasta INTEGER NOT NULL
+	) STRICT;`,
 }
 
 type Store struct{ db *sql.DB }
@@ -679,4 +689,39 @@ func (s *Store) GuardarCursorDeLog(container string, ts time.Time) error {
 func (s *Store) BorrarLogsAnterioresA(corte time.Time) error {
 	_, err := s.db.Exec(`DELETE FROM logs WHERE ts < ?`, corte.Unix())
 	return err
+}
+
+// MarcarComandoProcesado devuelve false si ese delivery ya se había procesado.
+//
+// comm-tool reintenta hasta 5 veces: sin esto, un "/silenciar 2h" se aplicaría
+// cinco veces y el bot contestaría cinco veces.
+func (s *Store) MarcarComandoProcesado(deliveryID string, cuando time.Time) (bool, error) {
+	res, err := s.db.Exec(`
+		INSERT INTO comandos_procesados (delivery_id, procesado_en) VALUES (?,?)
+		ON CONFLICT(delivery_id) DO NOTHING`, deliveryID, cuando.Unix())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+func (s *Store) Silenciar(hasta time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO silencio (id, hasta) VALUES (1, ?)
+		ON CONFLICT(id) DO UPDATE SET hasta = excluded.hasta`, hasta.Unix())
+	return err
+}
+
+// SilenciadoHasta devuelve hasta cuándo callar. Cero significa "no hay silencio".
+func (s *Store) SilenciadoHasta() (time.Time, error) {
+	var hasta int64
+	err := s.db.QueryRow(`SELECT hasta FROM silencio WHERE id = 1`).Scan(&hasta)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(hasta, 0).UTC(), nil
 }
