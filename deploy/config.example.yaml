@@ -14,6 +14,15 @@ docker_concurrencia: 8
 
 probe_timeout: 10s
 
+# Avisos. Los SECRETOS no van acá: van en /etc/server-status/env (modo 0600).
+comm_tool_url: https://comm.jadd.com.ar
+# uuid fijo que identifica al destinatario en comm-tool. Se genera una vez con
+# uuidgen. comm-tool nunca lo interpreta: es una invariante suya.
+comm_tool_user_id: ""
+
+hora_resumen: 8
+zona: America/Argentina/Buenos_Aires
+
 # Cada servicio se prueba por su URL PÚBLICA, no por localhost: así el probe
 # también verifica Cloudflare, el túnel y Caddy — el camino que usa la gente.
 servicios:
