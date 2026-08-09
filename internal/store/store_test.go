@@ -538,3 +538,40 @@ func TestSerieHostRecortaPorRango(t *testing.T) {
 		t.Errorf("volvieron %d puntos, quería 4 (minutos 2 a 5 inclusive)", len(got))
 	}
 }
+
+// El uptime que ve el público sale de contar probes buenos sobre el total.
+func TestUptimePorServicio(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+
+	var rs []model.ProbeResult
+	for i := range 10 {
+		rs = append(rs, model.ProbeResult{
+			TS: base.Add(time.Duration(i) * time.Minute), Servicio: "x", OK: i != 0,
+		})
+	}
+	if err := s.InsertProbeResults(rs); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.UptimePorServicio(base.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("UptimePorServicio: %v", err)
+	}
+	if got["x"] != 90 {
+		t.Errorf("uptime = %v, quería 90 (9 de 10 buenos)", got["x"])
+	}
+}
+
+// Un servicio sin ninguna medición todavía no puede reportar 0% —eso diría
+// "caído todo el mes" cuando en realidad recién arranca.
+func TestUptimeSinDatosDaCien(t *testing.T) {
+	s := abrir(t)
+	got, err := s.UptimePorServicio(time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("sin mediciones devolvió %v, quería un mapa vacío", got)
+	}
+}

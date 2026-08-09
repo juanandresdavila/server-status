@@ -20,6 +20,18 @@ comm_tool_url: https://comm.jadd.com.ar
 # uuidgen. comm-tool nunca lo interpreta: es una invariante suya.
 comm_tool_user_id: ""
 
+# Panel privado. Va atado a la IP de TAILNET: muestra todo (errores crudos,
+# métricas, nombres de containers) y no puede escuchar en 0.0.0.0.
+# Vacío lo apaga. En el servidor se completa con la IP real, que no entra al repo.
+panel_addr: ""
+
+# Portada pública: el proceso la ESCRIBE, Caddy la sirve. Vacío la apaga.
+portada_path: /opt/status/public/index.html
+
+# El watchdog se consulta a sí mismo por acá antes de latirle a Healthchecks:
+# si el túnel se cae pero el proceso vive, la vuelta completa falla y no late.
+url_publica: https://status.jadd.com.ar/
+
 hora_resumen: 8
 zona: America/Argentina/Buenos_Aires
 
