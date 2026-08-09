@@ -1,0 +1,13 @@
+#!/bin/sh
+# En un repo público, gitleaks en CI llega tarde: cuando CI falla, el commit
+# ya está pusheado y ya es público. Esta es la primera red, no la segunda.
+set -e
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+	echo "falta gitleaks. Instalalo con: brew install gitleaks" >&2
+	exit 1
+fi
+
+# gitleaks >= 8.19 usa 'git'; las versiones anteriores, 'detect'.
+gitleaks git --no-banner --redact . 2>/dev/null \
+	|| gitleaks detect --source . --no-banner --redact
