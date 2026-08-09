@@ -28,9 +28,12 @@ type Config struct {
 // Servicio es una cosa que se puede caer, con la URL que lo prueba y los
 // containers que lo componen.
 type Servicio struct {
-	Nombre     string   `yaml:"nombre"`
-	Probe      string   `yaml:"probe"`
-	Containers []string `yaml:"containers"`
+	Nombre string `yaml:"nombre"`
+	Probe  string `yaml:"probe"`
+	// EstadoEsperado en 0 significa "cualquier 2xx o 3xx". Con un código
+	// explícito, ese y solo ese cuenta como sano.
+	EstadoEsperado int      `yaml:"estado_esperado"`
+	Containers     []string `yaml:"containers"`
 }
 
 func Load(ruta string) (Config, error) {
