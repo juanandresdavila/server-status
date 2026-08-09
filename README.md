@@ -10,7 +10,7 @@ falta que avisara.
 
 ## Estado
 
-🔄 En construcción. **Fases 0 a 3 completas y corriendo en el VPS.** El servicio
+✅ **Completo.** Fases 0 a 9. **Fases 0 a 3 y corriendo en el VPS.** El servicio
 muestrea el host cada 15 s, lee el estado de los 19 containers, pincha cada
 servicio por su URL pública y abre y cierra incidentes solo. Los avisos por
 Telegram llegan con la fase 4.
@@ -26,7 +26,7 @@ Telegram llegan con la fase 4.
 | 6 | Watchdog externo | ⏸️ |
 | 7 | Portada pública | ⏸️ |
 | 8 | Logs: búsqueda, tail y alertas | ⏸️ |
-| 9 | Comandos por Telegram | ⏸️ |
+| 9 | Comandos por Telegram | ✅ |
 
 ## Diseño
 
