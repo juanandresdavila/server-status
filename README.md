@@ -54,3 +54,11 @@ es público.
 Nada sensible vive en este repo. `deploy/config.example.yaml` se copia a
 `/etc/server-status/config.yaml` en el servidor, y los tokens van aparte en
 `/etc/server-status/env` con modo `0600`.
+
+## Licencia
+
+[MIT](LICENSE) — usalo, copialo y adaptalo, solo conservá el aviso de copyright.
+
+Las dependencias de frontend se vendorean con su licencia al lado, sin CDN: el
+panel vive en el tailnet y no tiene por qué depender de que el navegador llegue
+a internet para dibujar un gráfico.
