@@ -47,6 +47,10 @@ type Config struct {
 	LogsPatron        string `yaml:"logs_patron"`
 	LogsVentanaMin    int    `yaml:"logs_ventana_min"`
 	LogsRetencionDias int    `yaml:"logs_retencion_dias"`
+
+	// BackupPath es la copia consistente que se lleva el restic de la Mac
+	// mini. Vacío la desactiva.
+	BackupPath string `yaml:"backup_path"`
 }
 
 // Servicio es una cosa que se puede caer, con la URL que lo prueba y los
@@ -106,6 +110,9 @@ func Load(ruta string) (Config, error) {
 	}
 	if c.LogsRetencionDias == 0 {
 		c.LogsRetencionDias = 30
+	}
+	if c.BackupPath == "" {
+		c.BackupPath = "/var/lib/server-status/backup/status.db"
 	}
 	if c.Zona == "" {
 		c.Zona = "America/Argentina/Buenos_Aires"

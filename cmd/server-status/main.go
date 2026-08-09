@@ -368,6 +368,17 @@ func correr(cfg config.Config, col *host.Collector) error {
 				} else {
 					slog.Info("retención de logs aplicada", "corte", corte.Format(time.DateOnly))
 				}
+
+				// Después de la retención y ANTES de que el restic de la Mac
+				// mini corra a las 04:30: la copia tiene que ser de la base ya
+				// podada, y consistente.
+				if cfg.BackupPath != "" {
+					if err := s.VacuumInto(cfg.BackupPath); err != nil {
+						slog.Error("no se pudo dejar la copia para el backup", "err", err)
+					} else {
+						slog.Info("copia consistente lista para el backup", "ruta", cfg.BackupPath)
+					}
+				}
 			}
 
 			if recordatorio.toca(clock.Real{}.Now().In(loc), cfg.HoraResumen) {
