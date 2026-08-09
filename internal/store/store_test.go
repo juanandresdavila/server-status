@@ -500,3 +500,41 @@ func TestYaEnviado(t *testing.T) {
 		t.Error("dice que no se envió algo que sí se marcó")
 	}
 }
+
+func TestSerieHostDevuelvePuntosOrdenados(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	for i := range 5 {
+		if err := s.InsertHostSample(muestra(base.Add(time.Duration(i)*time.Minute), float64(i*10))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.SerieHost(base.Add(-time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("SerieHost: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("volvieron %d puntos, quería 5", len(got))
+	}
+	// De la más VIEJA a la más nueva: un gráfico se dibuja hacia adelante.
+	if got[0].CPUPctAvg != 0 || got[4].CPUPctAvg != 40 {
+		t.Errorf("orden equivocado: primero=%v último=%v", got[0].CPUPctAvg, got[4].CPUPctAvg)
+	}
+}
+
+func TestSerieHostRecortaPorRango(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	for i := range 10 {
+		s.InsertHostSample(muestra(base.Add(time.Duration(i)*time.Minute), float64(i)))
+	}
+
+	got, err := s.SerieHost(base.Add(2*time.Minute), base.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Errorf("volvieron %d puntos, quería 4 (minutos 2 a 5 inclusive)", len(got))
+	}
+}
