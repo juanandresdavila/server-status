@@ -1,0 +1,12 @@
+# Copiar a /etc/server-status/config.yaml en el servidor.
+# Este archivo NO lleva secretos: los tokens van en /etc/server-status/env (modo 0600).
+
+base: /var/lib/server-status/status.db
+
+proc: /proc
+disco: /
+
+intervalo_muestreo: 15s
+intervalo_persistencia: 1m
+
+# La lista de 'servicios' con sus probes llega en el plan 2 (fases 2 a 4).

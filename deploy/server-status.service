@@ -1,0 +1,31 @@
+[Unit]
+Description=server-status — monitoreo del VPS
+Documentation=https://github.com/juanandresdavila/server-status
+After=network-online.target docker.service
+Wants=network-online.target
+
+# OJO: After, pero NUNCA Requires=docker.service.
+# Si Docker se cae, este servicio tiene que seguir vivo para poder avisarlo.
+# Con Requires, systemd lo mataría junto con Docker y el aviso nunca saldría.
+# Es la razón entera por la que esto no corre en un container.
+
+[Service]
+Type=simple
+User=server-status
+Group=server-status
+SupplementaryGroups=docker
+ExecStart=/usr/local/bin/server-status -config /etc/server-status/config.yaml run
+EnvironmentFile=-/etc/server-status/env
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/server-status /opt/status/public
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
