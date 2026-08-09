@@ -152,3 +152,28 @@ func TestProbeTimeoutPorDefecto(t *testing.T) {
 		t.Errorf("ProbeTimeout = %v, quería 10s", c.ProbeTimeout)
 	}
 }
+
+func TestDefaultsDeAvisos(t *testing.T) {
+	c, err := config.Load(escribir(t, "base: /tmp/x.db\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.TelegramAPI != "https://api.telegram.org" {
+		t.Errorf("TelegramAPI = %q", c.TelegramAPI)
+	}
+	if c.HoraResumen != 8 {
+		t.Errorf("HoraResumen = %d, quería 8", c.HoraResumen)
+	}
+	if c.Zona != "America/Argentina/Buenos_Aires" {
+		t.Errorf("Zona = %q", c.Zona)
+	}
+}
+
+// La zona horaria se valida al cargar: una zona inválida haría que el resumen
+// salga a una hora al azar, y eso se descubriría recién al día siguiente.
+func TestZonaInvalidaFalla(t *testing.T) {
+	_, err := config.Load(escribir(t, "base: /tmp/x.db\nzona: No/Existe\n"))
+	if err == nil {
+		t.Fatal("quería error con una zona inválida, no hubo")
+	}
+}

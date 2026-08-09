@@ -23,6 +23,14 @@ type Config struct {
 
 	ProbeTimeout time.Duration `yaml:"probe_timeout"`
 	Servicios    []Servicio    `yaml:"servicios"`
+
+	// Los secretos NO están acá: vienen del entorno. Esto es solo la parte
+	// no sensible de la configuración de avisos.
+	TelegramAPI    string `yaml:"telegram_api"`
+	CommToolURL    string `yaml:"comm_tool_url"`
+	CommToolUserID string `yaml:"comm_tool_user_id"`
+	HoraResumen    int    `yaml:"hora_resumen"`
+	Zona           string `yaml:"zona"`
 }
 
 // Servicio es una cosa que se puede caer, con la URL que lo prueba y los
@@ -67,6 +75,20 @@ func Load(ruta string) (Config, error) {
 
 	if c.ProbeTimeout == 0 {
 		c.ProbeTimeout = 10 * time.Second
+	}
+	if c.TelegramAPI == "" {
+		c.TelegramAPI = "https://api.telegram.org"
+	}
+	if c.HoraResumen == 0 {
+		c.HoraResumen = 8
+	}
+	if c.Zona == "" {
+		c.Zona = "America/Argentina/Buenos_Aires"
+	}
+	// Se valida al cargar: una zona inválida haría que el resumen salga a una
+	// hora al azar, y eso se descubriría recién al día siguiente.
+	if _, err := time.LoadLocation(c.Zona); err != nil {
+		return Config{}, fmt.Errorf("zona horaria %q inválida: %w", c.Zona, err)
 	}
 
 	if c.Base == "" {

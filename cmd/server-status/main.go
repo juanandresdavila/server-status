@@ -16,6 +16,9 @@ import (
 	"github.com/juanandresdavila/server-status/internal/collector/host"
 	"github.com/juanandresdavila/server-status/internal/config"
 	"github.com/juanandresdavila/server-status/internal/model"
+	"github.com/juanandresdavila/server-status/internal/notify"
+	"github.com/juanandresdavila/server-status/internal/notify/commtool"
+	"github.com/juanandresdavila/server-status/internal/notify/telegram"
 	"github.com/juanandresdavila/server-status/internal/prober"
 	"github.com/juanandresdavila/server-status/internal/rules"
 	"github.com/juanandresdavila/server-status/internal/store"
@@ -136,11 +139,34 @@ func correr(cfg config.Config, col *host.Collector) error {
 	persistencia := time.NewTicker(cfg.IntervaloPersistencia)
 	defer persistencia.Stop()
 
+	loc, err := time.LoadLocation(cfg.Zona)
+	if err != nil {
+		return err
+	}
+
 	cli := docker.New(cfg.DockerSocket)
 	pr := prober.New(clock.Real{}, cfg.ProbeTimeout)
 	motor := rules.NewMotor(s, clock.Real{}, rules.Defaults())
 
+	// Los secretos vienen del entorno, nunca de la config ni de la base.
+	// Invariante 8 del spec.
+	canalCT := commtool.New(cfg.CommToolURL, os.Getenv("COMM_TOOL_API_KEY"), cfg.CommToolUserID)
+	canalTG := telegram.New(cfg.TelegramAPI, os.Getenv("TELEGRAM_BOT_TOKEN"), os.Getenv("TELEGRAM_CHAT_ID"))
+	notificador := notify.NewNotificador(canalCT, canalTG, s, clock.Real{})
+
+	// Arrancar sin canales es válido a propósito: un monitor que no levanta
+	// porque no puede avisar es peor que uno que avisa a medias. Pero lo grita.
+	switch {
+	case !canalCT.Configurado() && !canalTG.Configurado():
+		slog.Warn("NINGÚN canal de avisos configurado: los incidentes solo van al log")
+	case !canalCT.Configurado():
+		slog.Warn("comm-tool sin configurar: los avisos salen por Telegram directo")
+	case !canalTG.Configurado():
+		slog.Warn("sin respaldo directo: si comm-tool se cae, ese aviso no sale")
+	}
+
 	var a agregador
+	var recordatorio recordatorioDiario
 	slog.Info("server-status arrancó", "base", cfg.Base, "muestreo", cfg.IntervaloMuestreo)
 
 	for {
@@ -210,14 +236,67 @@ func correr(cfg config.Config, col *host.Collector) error {
 			if err != nil {
 				slog.Error("falló el motor de reglas sobre el host", "err", err)
 			}
-			// El plan 3 reemplaza este log por el aviso de Telegram.
-			for _, c := range append(cambios, deHost...) {
+			deContainers, err := motor.EvaluarContainers(ms)
+			if err != nil {
+				slog.Error("falló el motor de reglas sobre los containers", "err", err)
+			}
+
+			// Loguear los cambios sirve para diagnosticar sin abrir la base.
+			// Los avisos NO salen de acá: se derivan de la base, así que una
+			// caída entre abrir el incidente y mandar el mensaje se recupera
+			// sola en el tick siguiente.
+			todos := append(append(cambios, deHost...), deContainers...)
+			for _, c := range todos {
 				slog.Info("incidente",
 					"transicion", c.Tipo.String(),
 					"sujeto", c.Incidente.Sujeto,
 					"severidad", c.Incidente.Severidad,
 					"detalle", c.Incidente.Detalle)
 			}
+
+			// El aviso de flapeo no tiene fila en incidents, así que no lo
+			// puede levantar AvisosPendientes: se manda acá.
+			for _, c := range todos {
+				if c.Incidente.Tipo != "flapping" {
+					continue
+				}
+				id := fmt.Sprintf("flap:%s:%d", c.Incidente.Sujeto, c.Incidente.ID)
+				if err := notificador.AvisarTexto(ctx, id, notify.Texto(model.Aviso{Incidente: c.Incidente})); err != nil {
+					slog.Error("no se pudo avisar la inestabilidad", "err", err)
+				}
+			}
+
+			pendientes, err := s.AvisosPendientes()
+			if err != nil {
+				slog.Error("no se pudieron leer los avisos pendientes", "err", err)
+			}
+			for _, av := range pendientes {
+				if err := notificador.Avisar(ctx, av); err != nil {
+					// No se marca nada: el tick siguiente lo reintenta.
+					slog.Error("no se pudo entregar el aviso", "delivery", av.DeliveryID, "err", err)
+				}
+			}
+
+			if recordatorio.toca(clock.Real{}.Now().In(loc), cfg.HoraResumen) {
+				if err := mandarResumen(ctx, s, notificador, m, resultados); err != nil {
+					slog.Error("no se pudo mandar el resumen diario", "err", err)
+				}
+			}
 		}
 	}
+}
+
+func mandarResumen(ctx context.Context, s *store.Store, n *notify.Notificador,
+	h model.HostSample, probes []model.ProbeResult) error {
+
+	ahora := clock.Real{}.Now()
+	cuantos, err := s.IncidentesDesde(ahora.Add(-24 * time.Hour))
+	if err != nil {
+		return err
+	}
+	texto := notify.TextoResumen(armarResumen(h, probes, cuantos))
+
+	// El resumen no es un incidente: no tiene fila en incidents y su id de
+	// entrega es la fecha, que lo hace único por día.
+	return n.AvisarTexto(ctx, "resumen:"+ahora.Format("2006-01-02"), texto)
 }
