@@ -9,4 +9,7 @@ disco: /
 intervalo_muestreo: 15s
 intervalo_persistencia: 1m
 
+docker_socket: /var/run/docker.sock
+docker_concurrencia: 8
+
 # La lista de 'servicios' con sus probes llega en el plan 2 (fases 2 a 4).

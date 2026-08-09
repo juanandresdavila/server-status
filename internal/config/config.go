@@ -17,6 +17,9 @@ type Config struct {
 	Disco                 string        `yaml:"disco"`
 	IntervaloMuestreo     time.Duration `yaml:"intervalo_muestreo"`
 	IntervaloPersistencia time.Duration `yaml:"intervalo_persistencia"`
+
+	DockerSocket       string `yaml:"docker_socket"`
+	DockerConcurrencia int    `yaml:"docker_concurrencia"`
 }
 
 func Load(ruta string) (Config, error) {
@@ -40,6 +43,12 @@ func Load(ruta string) (Config, error) {
 	}
 	if c.IntervaloPersistencia == 0 {
 		c.IntervaloPersistencia = time.Minute
+	}
+	if c.DockerSocket == "" {
+		c.DockerSocket = "/var/run/docker.sock"
+	}
+	if c.DockerConcurrencia == 0 {
+		c.DockerConcurrencia = 8
 	}
 
 	if c.Base == "" {

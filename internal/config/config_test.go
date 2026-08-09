@@ -71,3 +71,16 @@ func TestLoadYamlInvalidoFalla(t *testing.T) {
 		t.Fatal("quería error con YAML roto, no hubo")
 	}
 }
+
+func TestLoadDefaultsDeDocker(t *testing.T) {
+	c, err := config.Load(escribir(t, "base: /tmp/x.db\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DockerSocket != "/var/run/docker.sock" {
+		t.Errorf("DockerSocket = %q", c.DockerSocket)
+	}
+	if c.DockerConcurrencia != 8 {
+		t.Errorf("DockerConcurrencia = %d, quería 8", c.DockerConcurrencia)
+	}
+}

@@ -27,8 +27,10 @@ func TestOpenAplicaLasMigraciones(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if v != 1 {
-		t.Errorf("versión = %d, quería 1", v)
+	// Sin número fijo: el que importa lo afirma TestUltimaMigracionAplicada,
+	// y repetirlo acá obliga a tocar tres tests cada vez que se agrega una.
+	if v < 1 {
+		t.Errorf("versión = %d, no se aplicó ninguna migración", v)
 	}
 }
 
@@ -51,8 +53,81 @@ func TestOpenDosVecesNoRompe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if v != 1 {
-		t.Errorf("versión después de reabrir = %d, quería 1", v)
+	// Reabrir no debe re-aplicar nada ni saltear nada.
+	if v < 1 {
+		t.Errorf("versión después de reabrir = %d", v)
+	}
+}
+
+// Este es el único test con el número exacto: si alguien borra o reordena una
+// migración, acá se entera.
+func TestUltimaMigracionAplicada(t *testing.T) {
+	s := abrir(t)
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != 2 {
+		t.Errorf("versión = %d, quería 2", v)
+	}
+}
+
+func TestInsertContainerSamplesYConsulta(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 10, 30, 0, 0, time.UTC)
+
+	muestras := []model.ContainerSample{
+		{TS: ts, Name: "comm-tool", State: "running", Health: "none", Restarts: 0, CPUPct: 1.5, MemBytes: 50_000_000},
+		{TS: ts, Name: "supabase-db", State: "running", Health: "healthy", Restarts: 2, CPUPct: 3.25, MemBytes: 300_000_000},
+	}
+	if err := s.InsertContainerSamples(muestras); err != nil {
+		t.Fatalf("InsertContainerSamples: %v", err)
+	}
+
+	got, err := s.UltimoEstadoContainers()
+	if err != nil {
+		t.Fatalf("UltimoEstadoContainers: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("volvieron %d, quería 2", len(got))
+	}
+
+	porNombre := map[string]model.ContainerSample{}
+	for _, c := range got {
+		porNombre[c.Name] = c
+	}
+	if db := porNombre["supabase-db"]; db.Health != "healthy" || db.Restarts != 2 || db.CPUPct != 3.25 {
+		t.Errorf("supabase-db = %+v", db)
+	}
+}
+
+// Solo interesa la foto más reciente, no el historial entero.
+func TestUltimoEstadoContainersDevuelveSoloElMinutoMasNuevo(t *testing.T) {
+	s := abrir(t)
+	viejo := time.Date(2026, 8, 9, 10, 30, 0, 0, time.UTC)
+	nuevo := viejo.Add(time.Minute)
+
+	if err := s.InsertContainerSamples([]model.ContainerSample{
+		{TS: viejo, Name: "a", State: "running", Health: "none"},
+		{TS: viejo, Name: "b", State: "running", Health: "none"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertContainerSamples([]model.ContainerSample{
+		{TS: nuevo, Name: "a", State: "exited", Health: "none"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.UltimoEstadoContainers()
+	if err != nil {
+		t.Fatalf("UltimoEstadoContainers: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("volvieron %d filas, quería 1 (solo el minuto más nuevo)", len(got))
+	}
+	if got[0].State != "exited" {
+		t.Errorf("State = %q, quería exited", got[0].State)
 	}
 }
 
