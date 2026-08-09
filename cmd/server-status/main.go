@@ -51,10 +51,12 @@ func run(rutaConfig, comando string) error {
 		return listarContainers(cfg)
 	case "incidents":
 		return listarIncidentes(cfg)
+	case "backup":
+		return backupAhora(cfg)
 	case "run", "":
 		return correr(cfg, col)
 	default:
-		return fmt.Errorf("comando desconocido %q: usá 'sample', 'containers', 'incidents' o 'run'", comando)
+		return fmt.Errorf("comando desconocido %q: usá 'sample', 'containers', 'incidents', 'backup' o 'run'", comando)
 	}
 }
 
@@ -547,4 +549,24 @@ func nuevasLineas(crudas []docker.LineaLog, desde time.Time, container string) (
 		}
 	}
 	return out, ultima
+}
+
+// backupAhora deja la copia consistente sin esperar a la pasada de las 04:00.
+// Sirve para verificar el circuito de backup y para un respaldo a mano antes
+// de tocar algo.
+func backupAhora(cfg config.Config) error {
+	s, err := store.Open(cfg.Base)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	if cfg.BackupPath == "" {
+		return fmt.Errorf("no hay backup_path configurado")
+	}
+	if err := s.VacuumInto(cfg.BackupPath); err != nil {
+		return err
+	}
+	fmt.Println("copia consistente en", cfg.BackupPath)
+	return nil
 }
