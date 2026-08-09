@@ -55,6 +55,11 @@ func (s *storeFalso) MarcarEnviado(id string, _ time.Time, via, _ string) error 
 	return nil
 }
 
+func (s *storeFalso) YaEnviado(id string) (bool, error) {
+	_, ok := s.marcados[id]
+	return ok, nil
+}
+
 const abiertoEn = "2026-08-09T11:00:00Z"
 
 func aviso(id int64, cierre bool) model.Aviso {
@@ -233,5 +238,23 @@ func TestSinNingunCanalSeRegistraYSigue(t *testing.T) {
 	}
 	if st.marcados["1:opened"] != "sin-canal" {
 		t.Errorf("via = %q, quería sin-canal", st.marcados["1:opened"])
+	}
+}
+
+// Reiniciar el servicio no puede remandar el resumen del día: su delivery id
+// es la fecha, así que sin este chequeo cinco reinicios son cinco resúmenes.
+// comm-tool lo taparía con la idempotencyKey; el camino directo no.
+func TestNoRemandaLoQueYaSalio(t *testing.T) {
+	principal := &canalFalso{nombre: "commtool", configurado: true}
+	st := nuevoStore()
+	st.marcados["resumen:2026-08-09"] = "commtool"
+
+	n := notify.NewNotificador(principal, nil, st, relojEn("2026-08-09T11:01:00Z"))
+
+	if err := n.AvisarTexto(context.Background(), "resumen:2026-08-09", "hola"); err != nil {
+		t.Fatalf("AvisarTexto: %v", err)
+	}
+	if len(principal.mandados) != 0 {
+		t.Errorf("remandó un aviso ya entregado: %v", principal.mandados)
 	}
 }

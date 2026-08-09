@@ -410,6 +410,16 @@ func (s *Store) MarcarEnviado(deliveryID string, cuando time.Time, via, errMsg s
 	return err
 }
 
+// YaEnviado dice si un aviso ya salió. Se consulta ANTES de mandar: sin eso,
+// reiniciar el servicio remanda el resumen del día, cuyo delivery id es la
+// fecha. Por comm-tool lo taparía la idempotencyKey; por el camino directo no.
+func (s *Store) YaEnviado(deliveryID string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM notifications WHERE delivery_id = ?`, deliveryID).Scan(&n)
+	return n > 0, err
+}
+
 // AvisosPendientes deriva la cola de comparar incidents con notifications:
 // un incidente sin su fila de aviso ES un aviso pendiente. Sin tabla de cola,
 // una caída entre abrir el incidente y mandar el mensaje se resuelve sola.
