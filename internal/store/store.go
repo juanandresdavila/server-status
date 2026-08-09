@@ -4,6 +4,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/juanandresdavila/server-status/internal/model"
@@ -42,6 +43,29 @@ var migraciones = []string{
 		mem_bytes INTEGER NOT NULL,
 		PRIMARY KEY (ts, name)
 	) STRICT;`,
+
+	`CREATE TABLE probe_results (
+		ts          INTEGER NOT NULL,
+		service     TEXT    NOT NULL,
+		ok          INTEGER NOT NULL,
+		status_code INTEGER NOT NULL,
+		latency_ms  INTEGER NOT NULL,
+		error       TEXT    NOT NULL,
+		PRIMARY KEY (ts, service)
+	) STRICT;
+
+	CREATE TABLE incidents (
+		id        INTEGER PRIMARY KEY,
+		subject   TEXT    NOT NULL,
+		kind      TEXT    NOT NULL,
+		severity  TEXT    NOT NULL,
+		opened_at INTEGER NOT NULL,
+		closed_at INTEGER,
+		detail    TEXT    NOT NULL
+	) STRICT;
+
+	CREATE UNIQUE INDEX incidentes_abierto_unico
+		ON incidents(subject) WHERE closed_at IS NULL;`,
 }
 
 type Store struct{ db *sql.DB }
@@ -239,6 +263,130 @@ func (s *Store) UltimoEstadoContainers() ([]model.ContainerSample, error) {
 		c.TS = time.Unix(ts, 0).UTC()
 		c.MemBytes = uint64(mem)
 		out = append(out, c)
+	}
+	return out, filas.Err()
+}
+
+// AbrirIncidente falla si ya hay uno abierto para el mismo sujeto — lo impide
+// incidentes_abierto_unico, y esa negativa es una feature.
+func (s *Store) AbrirIncidente(i model.Incidente) (int64, error) {
+	res, err := s.db.Exec(`
+		INSERT INTO incidents (subject, kind, severity, opened_at, closed_at, detail)
+		VALUES (?,?,?,?,NULL,?)`,
+		i.Sujeto, i.Tipo, i.Severidad, i.AbiertoEn.Unix(), i.Detalle)
+	if err != nil {
+		return 0, fmt.Errorf("abrir incidente de %s: %w", i.Sujeto, err)
+	}
+	return res.LastInsertId()
+}
+
+func (s *Store) CerrarIncidente(id int64, cuando time.Time) error {
+	_, err := s.db.Exec(
+		`UPDATE incidents SET closed_at = ? WHERE id = ? AND closed_at IS NULL`,
+		cuando.Unix(), id)
+	return err
+}
+
+func (s *Store) IncidentesAbiertos() ([]model.Incidente, error) {
+	return s.consultarIncidentes(`
+		SELECT id, subject, kind, severity, opened_at, closed_at, detail
+		FROM incidents WHERE closed_at IS NULL ORDER BY opened_at`)
+}
+
+func (s *Store) UltimosIncidentes(n int) ([]model.Incidente, error) {
+	return s.consultarIncidentes(`
+		SELECT id, subject, kind, severity, opened_at, closed_at, detail
+		FROM incidents ORDER BY opened_at DESC LIMIT ` + strconv.Itoa(n))
+}
+
+func (s *Store) consultarIncidentes(q string) ([]model.Incidente, error) {
+	filas, err := s.db.Query(q)
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+
+	var out []model.Incidente
+	for filas.Next() {
+		var (
+			i       model.Incidente
+			abierto int64
+			cerrado sql.NullInt64
+		)
+		if err := filas.Scan(&i.ID, &i.Sujeto, &i.Tipo, &i.Severidad, &abierto, &cerrado, &i.Detalle); err != nil {
+			return nil, err
+		}
+		i.AbiertoEn = time.Unix(abierto, 0).UTC()
+		if cerrado.Valid {
+			t := time.Unix(cerrado.Int64, 0).UTC()
+			i.CerradoEn = &t
+		}
+		out = append(out, i)
+	}
+	return out, filas.Err()
+}
+
+func (s *Store) InsertProbeResults(rs []model.ProbeResult) error {
+	if len(rs) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO probe_results (ts, service, ok, status_code, latency_ms, error)
+		VALUES (?,?,?,?,?,?)
+		ON CONFLICT(ts, service) DO UPDATE SET
+			ok=excluded.ok, status_code=excluded.status_code,
+			latency_ms=excluded.latency_ms, error=excluded.error`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range rs {
+		ok := 0
+		if r.OK {
+			ok = 1
+		}
+		if _, err := stmt.Exec(
+			r.TS.Truncate(time.Minute).Unix(), r.Servicio, ok,
+			r.StatusCode, r.Latencia.Milliseconds(), r.Error,
+		); err != nil {
+			return fmt.Errorf("insertar probe de %s: %w", r.Servicio, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) UltimoEstadoProbes() ([]model.ProbeResult, error) {
+	filas, err := s.db.Query(`
+		SELECT ts, service, ok, status_code, latency_ms, error
+		FROM probe_results
+		WHERE ts = (SELECT MAX(ts) FROM probe_results)
+		ORDER BY service`)
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+
+	var out []model.ProbeResult
+	for filas.Next() {
+		var (
+			r      model.ProbeResult
+			ts, ms int64
+			ok     int
+		)
+		if err := filas.Scan(&ts, &r.Servicio, &ok, &r.StatusCode, &ms, &r.Error); err != nil {
+			return nil, err
+		}
+		r.TS = time.Unix(ts, 0).UTC()
+		r.OK = ok == 1
+		r.Latencia = time.Duration(ms) * time.Millisecond
+		out = append(out, r)
 	}
 	return out, filas.Err()
 }
