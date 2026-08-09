@@ -37,6 +37,11 @@ portada_path: /opt/status/public/index.html
 # si el túnel se cae pero el proceso vive, la vuelta completa falla y no late.
 url_publica: https://status.jadd.com.ar/
 
+# Copia consistente para el backup. Se rehace a las 04:00, antes de que el
+# restic de la Mac mini corra a las 04:30. Copiar el archivo vivo NO sirve:
+# con WAL puede quedar a mitad de una transacción.
+backup_path: /var/lib/server-status/backup/status.db
+
 hora_resumen: 8
 zona: America/Argentina/Buenos_Aires
 
