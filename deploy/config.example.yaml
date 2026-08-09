@@ -25,6 +25,11 @@ comm_tool_user_id: ""
 # Vacío lo apaga. En el servidor se completa con la IP real, que no entra al repo.
 panel_addr: ""
 
+# Webhook de comm-tool: puerto DISTINTO al del panel a propósito. Para que
+# comm-tool lo alcance desde su container hay que abrir este puerto a la subred
+# de Docker, y abrir el del panel —que muestra todo— sería regalar superficie.
+webhook_addr: ""
+
 # Portada pública: el proceso la ESCRIBE, Caddy la sirve. Vacío la apaga.
 portada_path: /opt/status/public/index.html
 

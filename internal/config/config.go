@@ -39,6 +39,9 @@ type Config struct {
 	PanelAddr   string `yaml:"panel_addr"`
 	PortadaPath string `yaml:"portada_path"`
 	URLPublica  string `yaml:"url_publica"`
+	// WebhookAddr es donde comm-tool entrega los comandos. Va en un puerto
+	// distinto al del panel a propósito: ver el comentario en main.go.
+	WebhookAddr string `yaml:"webhook_addr"`
 
 	// Logs. Patrón vacío apaga las alertas por patrón; retención en 0 usa 30 días.
 	LogsPatron        string `yaml:"logs_patron"`
