@@ -29,3 +29,14 @@ type HostSample struct {
 
 	Uptime time.Duration
 }
+
+// ContainerSample es el estado de un container en un minuto dado.
+type ContainerSample struct {
+	TS       time.Time
+	Name     string
+	State    string
+	Health   string
+	Restarts int
+	CPUPct   float64
+	MemBytes uint64
+}

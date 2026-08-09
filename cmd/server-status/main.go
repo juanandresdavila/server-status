@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/juanandresdavila/server-status/internal/clock"
+	"github.com/juanandresdavila/server-status/internal/collector/docker"
 	"github.com/juanandresdavila/server-status/internal/collector/host"
 	"github.com/juanandresdavila/server-status/internal/config"
+	"github.com/juanandresdavila/server-status/internal/model"
 	"github.com/juanandresdavila/server-status/internal/store"
 )
 
@@ -36,11 +38,28 @@ func run(rutaConfig, comando string) error {
 	switch comando {
 	case "sample":
 		return sampleUnaVez(col)
+	case "containers":
+		return listarContainers(cfg)
 	case "run", "":
 		return correr(cfg, col)
 	default:
-		return fmt.Errorf("comando desconocido %q: usá 'sample' o 'run'", comando)
+		return fmt.Errorf("comando desconocido %q: usá 'sample', 'containers' o 'run'", comando)
 	}
+}
+
+func listarContainers(cfg config.Config) error {
+	cli := docker.New(cfg.DockerSocket)
+	cs, err := cli.Recolectar(context.Background(), cfg.DockerConcurrencia)
+	if err != nil {
+		return err
+	}
+	const mib = 1024 * 1024
+	fmt.Printf("%-24s %-12s %-10s %8s %10s %s\n", "NOMBRE", "ESTADO", "SALUD", "CPU%", "MEM", "REINICIOS")
+	for _, c := range cs {
+		fmt.Printf("%-24s %-12s %-10s %7.1f%% %8.0f M %d\n",
+			c.Name, c.State, c.Health, c.CPUPct, float64(c.MemBytes)/mib, c.Restarts)
+	}
+	return nil
 }
 
 // sampleUnaVez imprime una muestra por stdout. Sirve para comparar a ojo contra
@@ -85,6 +104,8 @@ func correr(cfg config.Config, col *host.Collector) error {
 	persistencia := time.NewTicker(cfg.IntervaloPersistencia)
 	defer persistencia.Stop()
 
+	cli := docker.New(cfg.DockerSocket)
+
 	var a agregador
 	slog.Info("server-status arrancó", "base", cfg.Base, "muestreo", cfg.IntervaloMuestreo)
 
@@ -111,6 +132,22 @@ func correr(cfg config.Config, col *host.Collector) error {
 			}
 			if err := s.InsertHostSample(m); err != nil {
 				slog.Error("no se pudo guardar la muestra", "err", err)
+			}
+
+			cs, err := cli.Recolectar(ctx, cfg.DockerConcurrencia)
+			if err != nil {
+				slog.Error("no se pudieron recolectar los containers", "err", err)
+				continue
+			}
+			ms := make([]model.ContainerSample, 0, len(cs))
+			for _, c := range cs {
+				ms = append(ms, model.ContainerSample{
+					TS: m.TS, Name: c.Name, State: c.State, Health: c.Health,
+					Restarts: c.Restarts, CPUPct: c.CPUPct, MemBytes: c.MemBytes,
+				})
+			}
+			if err := s.InsertContainerSamples(ms); err != nil {
+				slog.Error("no se pudieron guardar los containers", "err", err)
 			}
 		}
 	}

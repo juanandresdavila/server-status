@@ -31,6 +31,17 @@ var migraciones = []string{
 		net_tx_bytes     INTEGER NOT NULL,
 		uptime_seconds   INTEGER NOT NULL
 	) STRICT;`,
+
+	`CREATE TABLE container_samples (
+		ts        INTEGER NOT NULL,
+		name      TEXT    NOT NULL,
+		state     TEXT    NOT NULL,
+		health    TEXT    NOT NULL,
+		restarts  INTEGER NOT NULL,
+		cpu_pct   REAL    NOT NULL,
+		mem_bytes INTEGER NOT NULL,
+		PRIMARY KEY (ts, name)
+	) STRICT;`,
 }
 
 type Store struct{ db *sql.DB }
@@ -165,6 +176,69 @@ func (s *Store) UltimasHostSamples(n int) ([]model.HostSample, error) {
 		m.NetRxBytes, m.NetTxBytes = uint64(rx), uint64(tx)
 		m.Uptime = time.Duration(uptime) * time.Second
 		out = append(out, m)
+	}
+	return out, filas.Err()
+}
+
+// InsertContainerSamples guarda la foto de un minuto, toda en una transacción:
+// media foto es peor que ninguna.
+func (s *Store) InsertContainerSamples(ms []model.ContainerSample) error {
+	if len(ms) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO container_samples (ts, name, state, health, restarts, cpu_pct, mem_bytes)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(ts, name) DO UPDATE SET
+			state=excluded.state, health=excluded.health, restarts=excluded.restarts,
+			cpu_pct=excluded.cpu_pct, mem_bytes=excluded.mem_bytes`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, m := range ms {
+		if _, err := stmt.Exec(
+			m.TS.Truncate(time.Minute).Unix(), m.Name, m.State, m.Health,
+			m.Restarts, m.CPUPct, int64(m.MemBytes),
+		); err != nil {
+			return fmt.Errorf("insertar %s: %w", m.Name, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// UltimoEstadoContainers devuelve la foto del minuto más reciente.
+func (s *Store) UltimoEstadoContainers() ([]model.ContainerSample, error) {
+	filas, err := s.db.Query(`
+		SELECT ts, name, state, health, restarts, cpu_pct, mem_bytes
+		FROM container_samples
+		WHERE ts = (SELECT MAX(ts) FROM container_samples)
+		ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+
+	var out []model.ContainerSample
+	for filas.Next() {
+		var (
+			c   model.ContainerSample
+			ts  int64
+			mem int64
+		)
+		if err := filas.Scan(&ts, &c.Name, &c.State, &c.Health, &c.Restarts, &c.CPUPct, &mem); err != nil {
+			return nil, err
+		}
+		c.TS = time.Unix(ts, 0).UTC()
+		c.MemBytes = uint64(mem)
+		out = append(out, c)
 	}
 	return out, filas.Err()
 }
