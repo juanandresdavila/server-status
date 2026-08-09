@@ -171,6 +171,24 @@ func correr(cfg config.Config, col *host.Collector) error {
 	// El panel se ata en su propia goroutine y nunca es fatal: la IP de
 	// tailnet puede no existir todavía al arrancar la máquina, y un monitor
 	// sin panel sigue sirviendo — uno muerto no.
+	// El webhook va en un listener APARTE del panel: para que comm-tool lo
+	// alcance desde su container hay que abrir el puerto a la subred de
+	// Docker, y abrir el del panel —que muestra todo— sería regalar superficie.
+	if cfg.WebhookAddr != "" {
+		wh := web.NuevoWebhook(os.Getenv("DELIVERY_SECRET_STATUS"),
+			&manejadorDeComandos{store: s, notificador: notificador})
+		mux := http.NewServeMux()
+		mux.Handle("POST /webhooks/comm-tool", wh)
+		go func() {
+			if err := web.Escuchar(cfg.WebhookAddr, mux, 2*time.Minute); err != nil {
+				slog.Error("el webhook no pudo levantar", "err", err)
+			}
+		}()
+		if os.Getenv("DELIVERY_SECRET_STATUS") == "" {
+			slog.Warn("webhook SIN secreto: va a rechazar todo hasta que se cargue DELIVERY_SECRET_STATUS")
+		}
+	}
+
 	if cfg.PanelAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/api/tail", web.NuevoTail(&seguidorDocker{cli: cli}))
@@ -328,6 +346,9 @@ func correr(cfg config.Config, col *host.Collector) error {
 					slog.Error("no se pudo avisar la inestabilidad", "err", err)
 				}
 			}
+
+			// /silenciar cambia esto entre ticks.
+			aplicarSilencio(s, notificador)
 
 			pendientes, err := s.AvisosPendientes()
 			if err != nil {
