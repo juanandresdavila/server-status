@@ -512,3 +512,29 @@ func (s *Store) IncidentesDesde(desde time.Time) (int, error) {
 		`SELECT COUNT(*) FROM incidents WHERE opened_at >= ?`, desde.Unix()).Scan(&n)
 	return n, err
 }
+
+// UptimePorServicio es el porcentaje de probes buenos desde un momento dado.
+// Es lo único de los probes que sale a la portada pública.
+//
+// Un servicio sin mediciones no aparece en el mapa: reportar 0% sería decir
+// "caído todo el mes" cuando en realidad recién arranca.
+func (s *Store) UptimePorServicio(desde time.Time) (map[string]float64, error) {
+	filas, err := s.db.Query(`
+		SELECT service, AVG(ok) * 100
+		FROM probe_results WHERE ts >= ? GROUP BY service`, desde.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+
+	out := map[string]float64{}
+	for filas.Next() {
+		var nombre string
+		var pct float64
+		if err := filas.Scan(&nombre, &pct); err != nil {
+			return nil, err
+		}
+		out[nombre] = pct
+	}
+	return out, filas.Err()
+}
