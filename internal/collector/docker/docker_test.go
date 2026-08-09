@@ -302,3 +302,34 @@ func TestRecolectarNoPideStatsDeContainersApagados(t *testing.T) {
 		t.Errorf("Restarts = %d, quería 7", got[0].Restarts)
 	}
 }
+
+// Cuando el proceso recibe SIGTERM, las llamadas a Docker en vuelo se cancelan
+// y cada una devuelve error. Eso es apagado normal, no una falla: loguearlas
+// como advertencia son 30 líneas de ruido en cada reinicio, y ese ruido es lo
+// que después tapa un problema real.
+func TestRecolectarNoAvisaSiElContextoYaEstabaCancelado(t *testing.T) {
+	c := servidorFalso(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[{"Id":"c1","Names":["/uno"],"State":"running"}]`))
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Con el contexto ya cancelado, List falla y Recolectar devuelve el error
+	// sin haber logueado nada por container.
+	if _, err := c.Recolectar(ctx, 2); err == nil {
+		t.Fatal("quería error con el contexto cancelado")
+	}
+}
+
+// El apagado se detecta por el contexto, no por el texto del error.
+func TestCancelacionEsApagadoNoFalla(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	if docker.EsApagado(ctx) {
+		t.Error("con el contexto vivo dice que es apagado")
+	}
+	cancel()
+	if !docker.EsApagado(ctx) {
+		t.Error("con el contexto cancelado no lo reconoce como apagado")
+	}
+}
