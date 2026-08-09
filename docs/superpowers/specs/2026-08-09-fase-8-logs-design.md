@@ -17,12 +17,18 @@ Tres mediciones sobre el VPS real, el 9/8/2026:
 | Qué | Medido | Consecuencia |
 |---|---|---|
 | Volumen total de logs de Docker | **9,9 MB** acumulados | No hace falta ninguna estrategia de compresión ni particionado |
-| Ritmo | **~2 líneas por minuto** entre los 21 containers | No hacen falta 21 streams permanentes: alcanza con pedir una vez por minuto |
+| Ritmo | **~52 líneas por minuto** entre los 21 containers | No hacen falta 21 streams permanentes: alcanza con pedir una vez por minuto |
 | `Config.Tty` de todos los containers | **`false`** | El stream de Docker viene **multiplexado** y hay que demultiplexarlo |
 
-El spec principal preveía "7 días o 500 MB, lo que llegue primero" imaginando un
-volumen alto. Con 2 líneas por minuto, **30 días entran en unos 20 MB** contra
-81 GB libres. Se guardan 30 días.
+> ⚠️ **La primera medición del ritmo dio ~2 líneas por minuto y estaba mal por
+> 25×**: cayó en un minuto tranquilo. El ritmo sostenido real, medido después
+> sobre una hora con tráfico normal, es de **~52 líneas por minuto**. Queda
+> anotado porque la conclusión no cambió pero el razonamiento sí, y con el
+> número viejo cualquier decisión futura sobre volumen saldría torcida.
+
+El spec principal preveía "7 días o 500 MB, lo que llegue primero". Con 52
+líneas por minuto, **30 días son ~2,2 millones de filas y ~390 MB** contra 81 GB
+libres. Se guardan 30 días.
 
 ## 2. Qué se ingiere, y qué queda afuera a propósito
 
@@ -103,10 +109,20 @@ incluido el match por prefijo (`conex*`).
 cuesta tres triggers de sincronía. A este volumen (~86.000 filas por mes) la
 duplicación son unos pocos MB y los escaneos son de milisegundos.
 
-**El escape hatch, anotado:** si el volumen creciera cien veces, esto se queda
-corto —las consultas por container y las borradas por fecha escanean— y hay que
-migrar a contenido externo con índices reales. La medición que dispara esa
-migración: que un `SELECT` del panel tarde más de un segundo.
+**Probado a volumen real.** Se cargaron 2,2 millones de filas —los 30 días de
+retención— en una base de 389 MB y se cronometraron las consultas del panel:
+
+| Consulta | Tiempo |
+|---|---|
+| `MATCH` de texto + orden por fecha | 341 ms |
+| Filtro por container **sin** texto — el que corre al abrir el panel | **443 ms** |
+| Texto + container | 199 ms |
+| Conteo para la retención | 240 ms |
+
+**El escape hatch, anotado:** el umbral que dispara la migración a FTS5 con
+contenido externo e índices reales es que un `SELECT` del panel pase **un
+segundo**. El peor caso a volumen de retención completa da 443 ms, así que hay
+algo más del doble de margen. Si el ritmo se duplicara, hay que volver a medir.
 
 **El cursor sobrevive a los reinicios.** `log_cursors` guarda el `ts` de la
 última línea de cada container: al arrancar, la ingesta pide desde ahí y no
