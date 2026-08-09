@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tail {{ .Container }} · server-status</title>
+<style>
+  :root { color-scheme: light dark; --borde:#8883; }
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem; }
+  h1 { font-size: 1.15rem; margin: 0 0 1rem; }
+  h1 a { font-size: .85rem; font-weight: 400; margin-left: 1rem; }
+  #estado { font-size: .8rem; opacity: .6; margin-bottom: .5rem; }
+  pre { font: 12.5px/1.6 ui-monospace, Menlo, monospace; margin: 0;
+        border: 1px solid var(--borde); border-radius: .5rem; padding: .75rem;
+        height: 75vh; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body>
+<h1>tail · {{ .Container }} <a href="/logs?container={{ .Container }}">← buscar</a></h1>
+<div id="estado">conectando…</div>
+<pre id="salida"></pre>
+<script>
+  const salida = document.getElementById('salida')
+  const estado = document.getElementById('estado')
+  const es = new EventSource('/api/tail?container=' + encodeURIComponent({{ .Container }}))
+
+  es.onopen = () => estado.textContent = 'en vivo'
+  es.onerror = () => estado.textContent = 'desconectado — recargá para reintentar'
+  es.addEventListener('linea', e => {
+    // Pegado al fondo solo si el usuario ya estaba abajo: si subió a leer
+    // algo, un auto-scroll se lo arrebata.
+    const abajo = salida.scrollHeight - salida.scrollTop - salida.clientHeight < 40
+    salida.textContent += e.data + '\n'
+    if (abajo) salida.scrollTop = salida.scrollHeight
+  })
+</script>
+</body>
+</html>

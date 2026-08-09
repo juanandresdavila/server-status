@@ -108,3 +108,67 @@ func partirTimestamp(cruda string) (time.Time, string) {
 	}
 	return ts.UTC(), resto
 }
+
+// SeguirLogs abre un stream con follow y emite cada línea a medida que llega.
+//
+// No reusa DemuxLogs a propósito: esa lee hasta EOF, y un follow no termina
+// nunca — colgaría para siempre sin emitir una sola línea. Acá el demux es
+// incremental, bloque por bloque.
+//
+// Vuelve cuando se cancela el contexto, que es lo que pasa cuando el cliente
+// cierra la pestaña del tail.
+func (c *Client) SeguirLogs(ctx context.Context, id string, out chan<- LineaLog) error {
+	ruta := fmt.Sprintf("/containers/%s/logs?stdout=1&stderr=1&timestamps=1&follow=1&tail=20", id)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+ruta, nil)
+	if err != nil {
+		return err
+	}
+	// Sin timeout: un follow dura lo que dure la pestaña abierta. El corte lo
+	// da el contexto.
+	cliente := &http.Client{Transport: c.http.Transport}
+	resp, err := cliente.Do(req)
+	if err != nil {
+		return fmt.Errorf("seguir logs de %s: %w", id, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("seguir logs de %s: %s", id, resp.Status)
+	}
+
+	br := bufio.NewReader(resp.Body)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var cab [8]byte
+		if _, err := io.ReadFull(br, cab[:]); err != nil {
+			return err
+		}
+		tam := binary.BigEndian.Uint32(cab[4:8])
+		if tam == 0 {
+			continue
+		}
+		payload := make([]byte, tam)
+		if _, err := io.ReadFull(br, payload); err != nil {
+			return err
+		}
+
+		stream := "stdout"
+		if cab[0] == 2 {
+			stream = "stderr"
+		}
+		for _, cruda := range strings.Split(strings.TrimRight(string(payload), "\n"), "\n") {
+			if cruda == "" {
+				continue
+			}
+			ts, linea := partirTimestamp(cruda)
+			select {
+			case out <- LineaLog{TS: ts, Stream: stream, Linea: linea}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+}

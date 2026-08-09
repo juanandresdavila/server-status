@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -171,8 +172,11 @@ func correr(cfg config.Config, col *host.Collector) error {
 	// tailnet puede no existir todavía al arrancar la máquina, y un monitor
 	// sin panel sigue sirviendo — uno muerto no.
 	if cfg.PanelAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/api/tail", web.NuevoTail(&seguidorDocker{cli: cli}))
+		mux.Handle("/", web.NuevoPanel(s))
 		go func() {
-			if err := web.Escuchar(cfg.PanelAddr, web.NuevoPanel(s), 2*time.Minute); err != nil {
+			if err := web.Escuchar(cfg.PanelAddr, mux, 2*time.Minute); err != nil {
 				slog.Error("el panel no pudo levantar", "err", err)
 			}
 		}()
@@ -192,6 +196,7 @@ func correr(cfg config.Config, col *host.Collector) error {
 
 	var a agregador
 	var recordatorio recordatorioDiario
+	var limpieza recordatorioDiario
 	slog.Info("server-status arrancó", "base", cfg.Base, "muestreo", cfg.IntervaloMuestreo)
 
 	for {
@@ -275,6 +280,25 @@ func correr(cfg config.Config, col *host.Collector) error {
 			if err != nil {
 				slog.Error("falló el motor de reglas sobre el host", "err", err)
 			}
+			ingerirLogs(ctx, cli, s, cs)
+
+			conteos := map[string]rules.ConteoLog{}
+			if cfg.LogsPatron != "" {
+				desde := m.TS.Add(-time.Duration(cfg.LogsVentanaMin) * time.Minute)
+				for _, c := range cs {
+					n, muestra, err := s.ContarCoincidencias(c.Name, cfg.LogsPatron, desde)
+					if err != nil {
+						slog.Error("no se pudieron contar coincidencias", "container", c.Name, "err", err)
+						continue
+					}
+					conteos[c.Name] = rules.ConteoLog{Coincidencias: n, Muestra: muestra}
+				}
+			}
+			deLogs, err := motor.EvaluarLogs(conteos)
+			if err != nil {
+				slog.Error("falló el motor de reglas sobre los logs", "err", err)
+			}
+
 			deContainers, err := motor.EvaluarContainers(ms)
 			if err != nil {
 				slog.Error("falló el motor de reglas sobre los containers", "err", err)
@@ -284,7 +308,7 @@ func correr(cfg config.Config, col *host.Collector) error {
 			// Los avisos NO salen de acá: se derivan de la base, así que una
 			// caída entre abrir el incidente y mandar el mensaje se recupera
 			// sola en el tick siguiente.
-			todos := append(append(cambios, deHost...), deContainers...)
+			todos := append(append(append(cambios, deHost...), deContainers...), deLogs...)
 			for _, c := range todos {
 				slog.Info("incidente",
 					"transicion", c.Tipo.String(),
@@ -313,6 +337,15 @@ func correr(cfg config.Config, col *host.Collector) error {
 				if err := notificador.Avisar(ctx, av); err != nil {
 					// No se marca nada: el tick siguiente lo reintenta.
 					slog.Error("no se pudo entregar el aviso", "delivery", av.DeliveryID, "err", err)
+				}
+			}
+
+			if limpieza.toca(clock.Real{}.Now().In(loc), 4) {
+				corte := clock.Real{}.Now().AddDate(0, 0, -cfg.LogsRetencionDias)
+				if err := s.BorrarLogsAnterioresA(corte); err != nil {
+					slog.Error("no se pudo aplicar la retención de logs", "err", err)
+				} else {
+					slog.Info("retención de logs aplicada", "corte", corte.Format(time.DateOnly))
 				}
 			}
 
@@ -365,4 +398,110 @@ func escribirPortada(s *store.Store, destino string) error {
 		})
 	}
 	return web.EscribirPublica(destino, e)
+}
+
+// ingerirLogs trae lo nuevo de cada container y avanza su cursor.
+//
+// Un container sin cursor arranca desde AHORA y no desde su historia: traer
+// los días que Docker conserve en el primer tick sería un pico inútil.
+// Es la invariante 10 del spec de la fase 8.
+func ingerirLogs(ctx context.Context, cli *docker.Client, s *store.Store, cs []docker.Container) {
+	ahora := clock.Real{}.Now()
+
+	for _, c := range cs {
+		if c.State != "running" {
+			continue
+		}
+		desde, hay, err := s.CursorDeLog(c.Name)
+		if err != nil {
+			slog.Error("no se pudo leer el cursor de logs", "container", c.Name, "err", err)
+			continue
+		}
+		if !hay {
+			if err := s.GuardarCursorDeLog(c.Name, ahora); err != nil {
+				slog.Error("no se pudo inicializar el cursor", "container", c.Name, "err", err)
+			}
+			continue
+		}
+
+		lineas, err := cli.Logs(ctx, c.ID, desde)
+		if err != nil {
+			if !docker.EsApagado(ctx) {
+				slog.Warn("no se pudieron leer los logs", "container", c.Name, "err", err)
+			}
+			continue
+		}
+		if len(lineas) == 0 {
+			continue
+		}
+
+		ms := make([]model.LineaLog, 0, len(lineas))
+		ultima := desde
+		for _, l := range lineas {
+			// Docker interpreta `since` como "estrictamente mayor" con
+			// resolución de segundo, pero igual conviene filtrar: si dos
+			// líneas caen en el mismo segundo del cursor, volverían a entrar.
+			if !l.TS.After(desde) {
+				continue
+			}
+			ms = append(ms, model.LineaLog{
+				TS: l.TS, Container: c.Name, Stream: l.Stream, Linea: l.Linea,
+			})
+			if l.TS.After(ultima) {
+				ultima = l.TS
+			}
+		}
+		if len(ms) == 0 {
+			continue
+		}
+		if err := s.InsertLogs(ms); err != nil {
+			slog.Error("no se pudieron guardar los logs", "container", c.Name, "err", err)
+			continue
+		}
+		if err := s.GuardarCursorDeLog(c.Name, ultima); err != nil {
+			slog.Error("no se pudo avanzar el cursor", "container", c.Name, "err", err)
+		}
+	}
+}
+
+// seguidorDocker adapta el cliente de Docker a lo que el tail necesita.
+//
+// Traduce nombre → id, porque el panel trabaja con nombres (que son estables)
+// y la API de Docker con ids (que cambian en cada recreación del container).
+type seguidorDocker struct{ cli *docker.Client }
+
+func (s *seguidorDocker) Seguir(ctx context.Context, nombre string, out chan<- model.LineaLog) error {
+	cs, err := s.cli.List(ctx)
+	if err != nil {
+		return err
+	}
+	var id string
+	for _, c := range cs {
+		if c.Name == nombre {
+			id = c.ID
+			break
+		}
+	}
+	if id == "" {
+		return fmt.Errorf("no hay ningún container llamado %q", nombre)
+	}
+
+	crudas := make(chan docker.LineaLog, 64)
+	errc := make(chan error, 1)
+	go func() { errc <- s.cli.SeguirLogs(ctx, id, crudas) }()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-errc:
+			return err
+		case l := <-crudas:
+			select {
+			case out <- model.LineaLog{TS: l.TS, Container: nombre, Stream: l.Stream, Linea: l.Linea}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
 }
