@@ -413,7 +413,10 @@ func TestStatsCalculaCPUYMemoria(t *testing.T) {
 	}
 
 	// deltaCPU=1000, deltaSys=10000 → 0.1 · 6 cores · 100 = 60%
-	if got.CPUPct != 60 {
+	//
+	// Con tolerancia y no con !=: el cálculo encadena divisiones y
+	// multiplicaciones sobre float64 y 60 sale como 60.00000000000001.
+	if !casiIgual(got.CPUPct, 60) {
 		t.Errorf("CPUPct = %v, quería 60", got.CPUPct)
 	}
 	// La memoria "real" descuenta el page cache reclamable, igual que
@@ -602,7 +605,7 @@ func TestRecolectarJuntaTodoYLimitaLaConcurrencia(t *testing.T) {
 	if !ok {
 		t.Fatal("falta el container 'uno' en el resultado")
 	}
-	if uno.Health != "healthy" || uno.Restarts != 1 || uno.CPUPct != 60 {
+	if uno.Health != "healthy" || uno.Restarts != 1 || !casiIgual(uno.CPUPct, 60) {
 		t.Errorf("uno = %+v, esperaba health=healthy restarts=1 cpu=60", uno)
 	}
 }
