@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/juanandresdavila/server-status/internal/model"
@@ -72,6 +73,18 @@ var migraciones = []string{
 		sent_at     INTEGER NOT NULL,
 		via         TEXT    NOT NULL,
 		error       TEXT    NOT NULL
+	) STRICT;`,
+
+	`CREATE VIRTUAL TABLE logs USING fts5(
+		linea,
+		container UNINDEXED,
+		stream    UNINDEXED,
+		ts        UNINDEXED
+	);
+
+	CREATE TABLE log_cursors (
+		container TEXT    PRIMARY KEY,
+		ultimo_ts INTEGER NOT NULL
 	) STRICT;`,
 }
 
@@ -537,4 +550,125 @@ func (s *Store) UptimePorServicio(desde time.Time) (map[string]float64, error) {
 		out[nombre] = pct
 	}
 	return out, filas.Err()
+}
+
+// escaparMatch envuelve el texto entre comillas dobles para que FTS5 lo tome
+// literal. Sin esto, un paréntesis suelto tirado en el buscador rompe la
+// consulta con un error de sintaxis — invariante 11 del spec de la fase 8.
+//
+// Se respeta el asterisco final, que es lo que hace útil una búsqueda
+// incremental: "conex*" matchea "conexion".
+func escaparMatch(texto string) string {
+	texto = strings.TrimSpace(texto)
+	prefijo := strings.HasSuffix(texto, "*")
+	texto = strings.TrimSuffix(texto, "*")
+	texto = `"` + strings.ReplaceAll(texto, `"`, `""`) + `"`
+	if prefijo {
+		texto += "*"
+	}
+	return texto
+}
+
+func (s *Store) InsertLogs(ls []model.LineaLog) error {
+	if len(ls) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT INTO logs (linea, container, stream, ts) VALUES (?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, l := range ls {
+		if _, err := stmt.Exec(l.Linea, l.Container, l.Stream, l.TS.Unix()); err != nil {
+			return fmt.Errorf("insertar log de %s: %w", l.Container, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// BuscarLogs devuelve las líneas más nuevas primero. Con texto vacío no usa
+// MATCH: devuelve las últimas, que es lo que muestra el panel al entrar.
+func (s *Store) BuscarLogs(texto, container string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+	q := `SELECT linea, container, stream, ts FROM logs WHERE ts <= ?`
+	args := []any{hasta.Unix()}
+
+	if !desde.IsZero() {
+		q += ` AND ts >= ?`
+		args = append(args, desde.Unix())
+	}
+	if container != "" {
+		q += ` AND container = ?`
+		args = append(args, container)
+	}
+	if strings.TrimSpace(texto) != "" {
+		q += ` AND logs MATCH ?`
+		args = append(args, escaparMatch(texto))
+	}
+	q += ` ORDER BY ts DESC LIMIT ?`
+	args = append(args, limite)
+
+	filas, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+
+	var out []model.LineaLog
+	for filas.Next() {
+		var l model.LineaLog
+		var ts int64
+		if err := filas.Scan(&l.Linea, &l.Container, &l.Stream, &ts); err != nil {
+			return nil, err
+		}
+		l.TS = time.Unix(ts, 0).UTC()
+		out = append(out, l)
+	}
+	return out, filas.Err()
+}
+
+// ContarCoincidencias alimenta la alerta por patrón: devuelve cuántas líneas
+// matchean y UNA de muestra. Nunca las diez — la regla 3 del spec principal.
+func (s *Store) ContarCoincidencias(container, patron string, desde time.Time) (int, string, error) {
+	var n int
+	var muestra string
+	err := s.db.QueryRow(`
+		SELECT COUNT(*), COALESCE(MAX(linea), '')
+		FROM logs WHERE container = ? AND ts >= ? AND logs MATCH ?`,
+		container, desde.Unix(), escaparMatch(patron)).Scan(&n, &muestra)
+	return n, muestra, err
+}
+
+// CursorDeLog dice desde dónde seguir leyendo. El bool es false para un
+// container que nunca se leyó: ese arranca desde AHORA y no desde su historia
+// — invariante 10.
+func (s *Store) CursorDeLog(container string) (time.Time, bool, error) {
+	var ts int64
+	err := s.db.QueryRow(`SELECT ultimo_ts FROM log_cursors WHERE container = ?`, container).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return time.Unix(ts, 0).UTC(), true, nil
+}
+
+func (s *Store) GuardarCursorDeLog(container string, ts time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO log_cursors (container, ultimo_ts) VALUES (?,?)
+		ON CONFLICT(container) DO UPDATE SET ultimo_ts = excluded.ultimo_ts`,
+		container, ts.Unix())
+	return err
+}
+
+func (s *Store) BorrarLogsAnterioresA(corte time.Time) error {
+	_, err := s.db.Exec(`DELETE FROM logs WHERE ts < ?`, corte.Unix())
+	return err
 }
