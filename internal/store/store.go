@@ -66,6 +66,13 @@ var migraciones = []string{
 
 	CREATE UNIQUE INDEX incidentes_abierto_unico
 		ON incidents(subject) WHERE closed_at IS NULL;`,
+
+	`CREATE TABLE notifications (
+		delivery_id TEXT    PRIMARY KEY,
+		sent_at     INTEGER NOT NULL,
+		via         TEXT    NOT NULL,
+		error       TEXT    NOT NULL
+	) STRICT;`,
 }
 
 type Store struct{ db *sql.DB }
@@ -389,4 +396,87 @@ func (s *Store) UltimoEstadoProbes() ([]model.ProbeResult, error) {
 		out = append(out, r)
 	}
 	return out, filas.Err()
+}
+
+// MarcarEnviado es idempotente a propósito: el proceso puede morirse entre
+// mandar el mensaje y registrar que lo mandó, y el reintento tiene que poder
+// escribir sin explotar.
+func (s *Store) MarcarEnviado(deliveryID string, cuando time.Time, via, errMsg string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO notifications (delivery_id, sent_at, via, error)
+		VALUES (?,?,?,?)
+		ON CONFLICT(delivery_id) DO NOTHING`,
+		deliveryID, cuando.Unix(), via, errMsg)
+	return err
+}
+
+// AvisosPendientes deriva la cola de comparar incidents con notifications:
+// un incidente sin su fila de aviso ES un aviso pendiente. Sin tabla de cola,
+// una caída entre abrir el incidente y mandar el mensaje se resuelve sola.
+func (s *Store) AvisosPendientes() ([]model.Aviso, error) {
+	filas, err := s.db.Query(`
+		SELECT i.id, i.subject, i.kind, i.severity, i.opened_at, i.closed_at, i.detail, 0 AS cierre
+		FROM incidents i
+		LEFT JOIN notifications n ON n.delivery_id = CAST(i.id AS TEXT) || ':opened'
+		WHERE n.delivery_id IS NULL
+
+		UNION ALL
+
+		SELECT i.id, i.subject, i.kind, i.severity, i.opened_at, i.closed_at, i.detail, 1 AS cierre
+		FROM incidents i
+		LEFT JOIN notifications n ON n.delivery_id = CAST(i.id AS TEXT) || ':closed'
+		WHERE i.closed_at IS NOT NULL AND n.delivery_id IS NULL
+
+		ORDER BY 5, 8`)
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+
+	var out []model.Aviso
+	for filas.Next() {
+		var (
+			i       model.Incidente
+			abierto int64
+			cerrado sql.NullInt64
+			cierre  int
+		)
+		if err := filas.Scan(&i.ID, &i.Sujeto, &i.Tipo, &i.Severidad,
+			&abierto, &cerrado, &i.Detalle, &cierre); err != nil {
+			return nil, err
+		}
+		i.AbiertoEn = time.Unix(abierto, 0).UTC()
+		if cerrado.Valid {
+			t := time.Unix(cerrado.Int64, 0).UTC()
+			i.CerradoEn = &t
+		}
+		sufijo := ":opened"
+		if cierre == 1 {
+			sufijo = ":closed"
+		}
+		out = append(out, model.Aviso{
+			DeliveryID: strconv.FormatInt(i.ID, 10) + sufijo,
+			Incidente:  i,
+			Cierre:     cierre == 1,
+		})
+	}
+	return out, filas.Err()
+}
+
+// CiclosEnVentana cuenta cuántos incidentes de un sujeto se abrieron desde un
+// momento dado. Es la medida de "esto está rebotando".
+func (s *Store) CiclosEnVentana(sujeto string, desde time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM incidents WHERE subject = ? AND opened_at >= ?`,
+		sujeto, desde.Unix()).Scan(&n)
+	return n, err
+}
+
+// IncidentesDesde cuenta los incidentes abiertos a partir de un momento.
+func (s *Store) IncidentesDesde(desde time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM incidents WHERE opened_at >= ?`, desde.Unix()).Scan(&n)
+	return n, err
 }

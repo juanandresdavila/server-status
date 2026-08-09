@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -67,8 +68,8 @@ func TestUltimaMigracionAplicada(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 3 {
-		t.Errorf("versión = %d, quería 3", v)
+	if v != 4 {
+		t.Errorf("versión = %d, quería 4", v)
 	}
 }
 
@@ -324,5 +325,153 @@ func TestInsertProbeResults(t *testing.T) {
 	}
 	if sitio := porServicio["sitio"]; sitio.OK || sitio.StatusCode != 502 || sitio.Latencia != 2*time.Second {
 		t.Errorf("sitio = %+v", sitio)
+	}
+}
+
+func TestAvisoPendienteAlAbrirUnIncidente(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+
+	id, err := s.AbrirIncidente(model.Incidente{
+		Sujeto: "service:comm-tool", Tipo: "down", Severidad: "critical",
+		AbiertoEn: ts, Detalle: "HTTP 502",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pend, err := s.AvisosPendientes()
+	if err != nil {
+		t.Fatalf("AvisosPendientes: %v", err)
+	}
+	if len(pend) != 1 {
+		t.Fatalf("hay %d pendientes, quería 1", len(pend))
+	}
+	quiero := strconv.FormatInt(id, 10) + ":opened"
+	if pend[0].DeliveryID != quiero {
+		t.Errorf("DeliveryID = %q, quería %q", pend[0].DeliveryID, quiero)
+	}
+	if pend[0].Cierre {
+		t.Error("Cierre = true en un incidente recién abierto")
+	}
+}
+
+// Marcarlo enviado lo saca de pendientes. Esto es lo que evita que el bot
+// mande el mismo aviso en cada tick.
+func TestMarcarEnviadoSacaDePendientes(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+
+	id, _ := s.AbrirIncidente(model.Incidente{
+		Sujeto: "service:x", Tipo: "down", Severidad: "critical",
+		AbiertoEn: ts, Detalle: "d",
+	})
+	dst := strconv.FormatInt(id, 10) + ":opened"
+
+	if err := s.MarcarEnviado(dst, ts, "commtool", ""); err != nil {
+		t.Fatalf("MarcarEnviado: %v", err)
+	}
+
+	pend, err := s.AvisosPendientes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pend) != 0 {
+		t.Errorf("quedaron %d pendientes después de marcar enviado", len(pend))
+	}
+}
+
+// Cerrar el incidente genera un segundo aviso, distinto del de apertura.
+func TestCerrarGeneraSuPropioAviso(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+
+	id, _ := s.AbrirIncidente(model.Incidente{
+		Sujeto: "service:x", Tipo: "down", Severidad: "critical",
+		AbiertoEn: ts, Detalle: "d",
+	})
+	s.MarcarEnviado(strconv.FormatInt(id, 10)+":opened", ts, "commtool", "")
+
+	if err := s.CerrarIncidente(id, ts.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	pend, err := s.AvisosPendientes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pend) != 1 {
+		t.Fatalf("hay %d pendientes, quería 1 (el de cierre)", len(pend))
+	}
+	if !pend[0].Cierre {
+		t.Error("Cierre = false en el aviso de un incidente cerrado")
+	}
+	if pend[0].DeliveryID != strconv.FormatInt(id, 10)+":closed" {
+		t.Errorf("DeliveryID = %q", pend[0].DeliveryID)
+	}
+}
+
+// Marcar dos veces el mismo id no puede explotar: pasa cuando el proceso
+// muere justo después de mandar y antes de commitear.
+func TestMarcarEnviadoDosVecesEsInofensivo(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+
+	if err := s.MarcarEnviado("1:opened", ts, "commtool", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarcarEnviado("1:opened", ts, "telegram", ""); err != nil {
+		t.Errorf("el segundo MarcarEnviado falló: %v", err)
+	}
+}
+
+func TestCiclosEnVentanaCuentaSoloLosDeEseSujeto(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+
+	for i := range 4 {
+		id, err := s.AbrirIncidente(model.Incidente{
+			Sujeto: "service:x", Tipo: "down", Severidad: "critical",
+			AbiertoEn: base.Add(time.Duration(i*10) * time.Minute), Detalle: "d",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Hay que cerrarlo para poder abrir el siguiente: lo impide el índice.
+		if err := s.CerrarIncidente(id, base.Add(time.Duration(i*10+5)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, _ := s.AbrirIncidente(model.Incidente{
+		Sujeto: "service:otro", Tipo: "down", Severidad: "critical",
+		AbiertoEn: base, Detalle: "d",
+	})
+	s.CerrarIncidente(id, base.Add(time.Minute))
+
+	n, err := s.CiclosEnVentana("service:x", base.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("CiclosEnVentana: %v", err)
+	}
+	if n != 4 {
+		t.Errorf("ciclos = %d, quería 4", n)
+	}
+}
+
+func TestCiclosEnVentanaIgnoraLoViejo(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+
+	id, _ := s.AbrirIncidente(model.Incidente{
+		Sujeto: "service:x", Tipo: "down", Severidad: "critical",
+		AbiertoEn: base.Add(-3 * time.Hour), Detalle: "viejo",
+	})
+	s.CerrarIncidente(id, base.Add(-3*time.Hour).Add(time.Minute))
+
+	n, err := s.CiclosEnVentana("service:x", base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("ciclos = %d, quería 0: el incidente es de hace 3 horas", n)
 	}
 }

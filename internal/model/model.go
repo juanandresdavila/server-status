@@ -42,6 +42,16 @@ type Incidente struct {
 	Detalle   string
 }
 
+// Aviso es un mensaje que hay que mandar. El DeliveryID es determinístico:
+// '<incidenteID>:opened' o '<incidenteID>:closed'. Con un uuid nuevo por
+// intento, un reintento mandaría el aviso dos veces — lección copiada de
+// comm-tool.
+type Aviso struct {
+	DeliveryID string
+	Incidente  Incidente
+	Cierre     bool // false = se abrió, true = se cerró
+}
+
 // ProbeResult es el resultado de pinchar un servicio una vez.
 type ProbeResult struct {
 	TS         time.Time
