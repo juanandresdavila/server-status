@@ -180,7 +180,7 @@ func correr(cfg config.Config, col *host.Collector) error {
 		mux := http.NewServeMux()
 		mux.Handle("POST /webhooks/comm-tool", wh)
 		go func() {
-			if err := web.Escuchar(cfg.WebhookAddr, mux, 2*time.Minute); err != nil {
+			if err := web.EscucharComo("webhook", cfg.WebhookAddr, mux, 2*time.Minute); err != nil {
 				slog.Error("el webhook no pudo levantar", "err", err)
 			}
 		}()
