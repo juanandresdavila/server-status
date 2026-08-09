@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>server-status</title>
+<style>
+  :root { color-scheme: light dark; --ok:#1a7f4b; --mal:#c0392b; --tibio:#b8860b; --borde:#8883; }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         margin: 0; padding: 1.5rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
+  h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .04em;
+       opacity: .6; margin: 2rem 0 .75rem; }
+  .sub { opacity: .6; font-size: .85rem; margin-bottom: 1.5rem; }
+  .tarjetas { display: grid; gap: .75rem;
+              grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
+  .tarjeta { border: 1px solid var(--borde); border-radius: .5rem; padding: .75rem .9rem; }
+  .tarjeta .k { font-size: .75rem; text-transform: uppercase; opacity: .6; }
+  .tarjeta .v { font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+  .graficos { display: grid; gap: 1rem; margin-top: 1rem;
+              grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); }
+  .grafico { height: 240px; border: 1px solid var(--borde); border-radius: .5rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th { text-align: left; font-weight: 600; opacity: .6; font-size: .8rem;
+       text-transform: uppercase; padding: .4rem .5rem; }
+  td { padding: .45rem .5rem; border-top: 1px solid var(--borde);
+       font-variant-numeric: tabular-nums; }
+  td.err { font-variant-numeric: normal; opacity: .75; font-size: .82rem;
+           font-family: ui-monospace, Menlo, monospace; }
+  .bien { color: var(--ok); } .mal { color: var(--mal); } .tibio { color: var(--tibio); }
+  .rangos a { margin-right: .75rem; font-size: .85rem; }
+</style>
+</head>
+<body>
+
+<h1>server-status</h1>
+<div class="sub">
+  uptime {{ printf "%.0f" .Host.Uptime.Hours }} h ·
+  carga {{ .Host.Load1 }} / {{ .Host.Load5 }} / {{ .Host.Load15 }} ·
+  actualizado {{ hora .Host.TS }}
+</div>
+
+<div class="tarjetas">
+  <div class="tarjeta"><div class="k">CPU</div>
+    <div class="v">{{ printf "%.1f" .Host.CPUPctAvg }}%</div></div>
+  <div class="tarjeta"><div class="k">CPU pico</div>
+    <div class="v">{{ printf "%.1f" .Host.CPUPctMax }}%</div></div>
+  <div class="tarjeta"><div class="k">Memoria</div>
+    <div class="v">{{ printf "%.0f" (pct .Host.MemUsedBytes .Host.MemTotalBytes) }}%</div></div>
+  <div class="tarjeta"><div class="k">Disco</div>
+    <div class="v">{{ printf "%.0f" (pct .Host.DiskUsedBytes .Host.DiskTotalBytes) }}%</div></div>
+  <div class="tarjeta"><div class="k">Swap</div>
+    <div class="v">{{ printf "%.1f" (pct .Host.SwapUsedBytes .Host.SwapTotalBytes) }}%</div></div>
+</div>
+
+<h2>Historial</h2>
+<div class="rangos">
+  <a href="?horas=6">6 h</a><a href="?horas=24">24 h</a><a href="?horas=168">7 días</a><a href="?horas=720">30 días</a>
+</div>
+<div class="graficos">
+  <div id="g-cpu" class="grafico"></div>
+  <div id="g-mem" class="grafico"></div>
+  <div id="g-disco" class="grafico"></div>
+  <div id="g-load" class="grafico"></div>
+</div>
+
+<h2>Servicios</h2>
+<table>
+  <tr><th>Servicio</th><th>Estado</th><th>Código</th><th>Latencia</th><th>Detalle</th></tr>
+  {{ range .Probes }}
+  <tr>
+    <td>{{ .Servicio }}</td>
+    <td class="{{ if .OK }}bien{{ else }}mal{{ end }}">{{ if .OK }}OK{{ else }}CAÍDO{{ end }}</td>
+    <td>{{ .StatusCode }}</td>
+    <td>{{ .Latencia.Milliseconds }} ms</td>
+    <td class="err">{{ .Error }}</td>
+  </tr>
+  {{ end }}
+</table>
+
+<h2>Containers</h2>
+<table>
+  <tr><th>Nombre</th><th>Estado</th><th>Salud</th><th>CPU</th><th>Memoria</th><th>Reinicios</th></tr>
+  {{ range .Containers }}
+  <tr>
+    <td>{{ .Name }}</td>
+    <td class="{{ if eq .State "running" }}bien{{ else }}mal{{ end }}">{{ .State }}</td>
+    <td class="{{ if eq .Health "unhealthy" }}mal{{ else if eq .Health "healthy" }}bien{{ end }}">{{ .Health }}</td>
+    <td>{{ printf "%.1f" .CPUPct }}%</td>
+    <td>{{ printf "%.0f" (mib .MemBytes) }} MiB</td>
+    <td class="{{ if gt .Restarts 0 }}tibio{{ end }}">{{ .Restarts }}</td>
+  </tr>
+  {{ end }}
+</table>
+
+<h2>Incidentes</h2>
+<table>
+  <tr><th>Sujeto</th><th>Severidad</th><th>Desde</th><th>Hasta</th><th>Detalle</th></tr>
+  {{ range .Incidentes }}
+  <tr>
+    <td>{{ .Sujeto }}</td>
+    <td class="{{ if eq .Severidad "critical" }}mal{{ else }}tibio{{ end }}">{{ .Severidad }}</td>
+    <td>{{ hora .AbiertoEn }}</td>
+    <td>{{ if .CerradoEn }}{{ hora .CerradoEn }}{{ else }}<span class="mal">abierto</span>{{ end }}</td>
+    <td class="err">{{ .Detalle }}</td>
+  </tr>
+  {{ else }}
+  <tr><td colspan="5" style="opacity:.6">sin incidentes registrados</td></tr>
+  {{ end }}
+</table>
+
+<script src="/assets/echarts.min.js"></script>
+<script>
+  const oscuro = matchMedia('(prefers-color-scheme: dark)').matches
+  const series = [
+    { id: 'g-cpu',   titulo: 'CPU %',         campo: 'cpu',   max: 100 },
+    { id: 'g-mem',   titulo: 'Memoria %',     campo: 'mem',   max: 100 },
+    { id: 'g-disco', titulo: 'Disco %',       campo: 'disco', max: 100 },
+    { id: 'g-load',  titulo: 'Carga (1 min)', campo: 'load',  max: null },
+  ]
+
+  const horas = new URLSearchParams(location.search).get('horas') || 24
+
+  fetch(`/api/series?horas=${horas}`).then(r => r.json()).then(d => {
+    const t = d.ts.map(s => s * 1000)
+    for (const s of series) {
+      const chart = echarts.init(document.getElementById(s.id), oscuro ? 'dark' : null,
+                                 { renderer: 'canvas' })
+      chart.setOption({
+        backgroundColor: 'transparent',
+        title: { text: s.titulo, left: 10, top: 6, textStyle: { fontSize: 13 } },
+        grid: { left: 46, right: 18, top: 40, bottom: 52 },
+        xAxis: { type: 'time' },
+        yAxis: { type: 'value', min: 0, max: s.max },
+        tooltip: { trigger: 'axis' },
+        // dataZoom es exactamente lo que a mano habría costado caro:
+        // acá es una línea y trae el slider y el zoom con la rueda.
+        dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 10 }],
+        series: [{
+          type: 'line', showSymbol: false, smooth: true, areaStyle: { opacity: .18 },
+          data: t.map((x, i) => [x, d[s.campo][i]]),
+        }],
+      })
+      addEventListener('resize', () => chart.resize())
+    }
+  })
+
+  // Se recarga solo: sirve para dejarlo abierto en una pestaña.
+  setTimeout(() => location.reload(), 60000)
+</script>
+</body>
+</html>
