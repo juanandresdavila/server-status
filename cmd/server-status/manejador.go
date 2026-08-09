@@ -40,6 +40,8 @@ func (m *manejadorDeComandos) Procesar(deliveryID, texto string) (string, error)
 		return "", nil
 	}
 
+	slog.Info("comando recibido", "comando", c.Nombre, "args", c.Args, "delivery", deliveryID)
+
 	respuesta, err := comandos.Ejecutar(m.store, c, ahora)
 	if err != nil {
 		return "", err

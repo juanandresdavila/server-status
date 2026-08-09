@@ -38,13 +38,20 @@ var plantillas embed.FS
 // Nunca es fatal para el proceso: quien llama lo hace en una goroutine y
 // loguea. Un monitor sin panel sigue sirviendo; un monitor muerto no.
 func Escuchar(direccion string, h http.Handler, plazo time.Duration) error {
+	return EscucharComo("panel", direccion, h, plazo)
+}
+
+// EscucharComo es igual pero dice qué es lo que está escuchando: con dos
+// listeners, un log que dice "panel" para los dos manda a diagnosticar al
+// lugar equivocado.
+func EscucharComo(nombre, direccion string, h http.Handler, plazo time.Duration) error {
 	limite := time.Now().Add(plazo)
 	var ultimo error
 
 	for {
 		ln, err := net.Listen("tcp", direccion)
 		if err == nil {
-			slog.Info("panel escuchando", "direccion", direccion)
+			slog.Info(nombre+" escuchando", "direccion", direccion)
 			srv := &http.Server{
 				Handler:           h,
 				ReadHeaderTimeout: 10 * time.Second,
@@ -53,7 +60,7 @@ func Escuchar(direccion string, h http.Handler, plazo time.Duration) error {
 		}
 		ultimo = err
 		if time.Now().After(limite) {
-			return fmt.Errorf("no se pudo escuchar en %s en %s: %w", direccion, plazo, ultimo)
+			return fmt.Errorf("%s: no se pudo escuchar en %s en %s: %w", nombre, direccion, plazo, ultimo)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
