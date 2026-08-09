@@ -145,6 +145,12 @@ func memReal(s statsAPI) uint64 {
 	return uso - cache
 }
 
+// EsApagado dice si el contexto ya terminó, o sea si el proceso se está
+// apagando. Un error de Docker durante el apagado es esperado y no merece
+// una advertencia: con 21 containers son más de 40 líneas de ruido por
+// reinicio, y eso es lo que hace que un WARN real pase desapercibido.
+func EsApagado(ctx context.Context) bool { return ctx.Err() != nil }
+
 // Recolectar arma la foto completa: lista, y para cada container su detalle y
 // su uso, con como mucho `limite` requests en vuelo.
 //
@@ -171,7 +177,9 @@ func (c *Client) Recolectar(ctx context.Context, limite int) ([]Container, error
 			defer func() { <-sem }()
 
 			if d, err := c.Inspect(ctx, cs[i].ID); err != nil {
-				slog.Warn("no se pudo inspeccionar", "container", cs[i].Name, "err", err)
+				if !EsApagado(ctx) {
+					slog.Warn("no se pudo inspeccionar", "container", cs[i].Name, "err", err)
+				}
 			} else {
 				cs[i].Health = d.Health
 				cs[i].Restarts = d.Restarts
@@ -182,7 +190,9 @@ func (c *Client) Recolectar(ctx context.Context, limite int) ([]Container, error
 				return
 			}
 			if u, err := c.Stats(ctx, cs[i].ID); err != nil {
-				slog.Warn("no se pudieron leer los stats", "container", cs[i].Name, "err", err)
+				if !EsApagado(ctx) {
+					slog.Warn("no se pudieron leer los stats", "container", cs[i].Name, "err", err)
+				}
 			} else {
 				cs[i].CPUPct = u.CPUPct
 				cs[i].MemBytes = u.MemBytes
