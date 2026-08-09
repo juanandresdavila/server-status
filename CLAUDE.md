@@ -211,6 +211,15 @@ Rutas en el servidor:
 | Base | `/var/lib/server-status/status.db` |
 | Unit | `/etc/systemd/system/server-status.service` |
 
+**La copia para el backup se rehace a las 04:00**, antes de que el restic de la
+Mac mini corra a las 04:30. Copiar `status.db` en vivo **no sirve**: con WAL
+puede quedar a mitad de una transacción. Para hacerla a mano:
+`server-status backup`.
+
+⚠️ **Verificar que el script de backup de la Mac mini incluya
+`/var/lib/server-status/backup/`.** Si no lo incluye, la copia se genera y no se
+la lleva nadie.
+
 ```bash
 ssh vps 'systemctl status server-status'
 ssh vps 'sudo journalctl -u server-status -n 50 --no-pager'
