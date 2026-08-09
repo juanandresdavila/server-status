@@ -12,4 +12,32 @@ intervalo_persistencia: 1m
 docker_socket: /var/run/docker.sock
 docker_concurrencia: 8
 
-# La lista de 'servicios' con sus probes llega en el plan 2 (fases 2 a 4).
+probe_timeout: 10s
+
+# Cada servicio se prueba por su URL PÚBLICA, no por localhost: así el probe
+# también verifica Cloudflare, el túnel y Caddy — el camino que usa la gente.
+servicios:
+  - nombre: sitio
+    probe: https://jadd.com.ar/
+    containers: [caddy, cloudflared]
+
+  - nombre: comm-tool
+    probe: https://comm.jadd.com.ar/health
+    containers: [comm-tool, comm-tool-db]
+
+  # Los Supabase no exponen NINGÚN endpoint que dé 2xx sin autenticación:
+  # /auth/v1/health y /rest/v1/ devuelven 401 desde el gateway. Se usa
+  # /auth/v1/authorize, que da 400 porque el request llegó hasta GoTrue y le
+  # faltaban parámetros. Ese 400 prueba el camino completo; el 401, solo que
+  # el gateway está vivo.
+  - nombre: study-master
+    probe: https://supabase-sm.jadd.com.ar/auth/v1/authorize
+    estado_esperado: 400
+    containers: [supabase-kong, supabase-auth, supabase-rest, supabase-db,
+                 supabase-storage, supabase-meta, supabase-imgproxy]
+
+  - nombre: gym-tracker
+    probe: https://supabase-gym.jadd.com.ar/auth/v1/authorize
+    estado_esperado: 400
+    containers: [supabase-gym-kong, supabase-gym-auth, supabase-gym-rest,
+                 supabase-gym-db, supabase-gym-meta, supabase-gym-studio]

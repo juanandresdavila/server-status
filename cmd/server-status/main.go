@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 	"github.com/juanandresdavila/server-status/internal/collector/host"
 	"github.com/juanandresdavila/server-status/internal/config"
 	"github.com/juanandresdavila/server-status/internal/model"
+	"github.com/juanandresdavila/server-status/internal/prober"
+	"github.com/juanandresdavila/server-status/internal/rules"
 	"github.com/juanandresdavila/server-status/internal/store"
 )
 
@@ -40,11 +43,40 @@ func run(rutaConfig, comando string) error {
 		return sampleUnaVez(col)
 	case "containers":
 		return listarContainers(cfg)
+	case "incidents":
+		return listarIncidentes(cfg)
 	case "run", "":
 		return correr(cfg, col)
 	default:
-		return fmt.Errorf("comando desconocido %q: usá 'sample', 'containers' o 'run'", comando)
+		return fmt.Errorf("comando desconocido %q: usá 'sample', 'containers', 'incidents' o 'run'", comando)
 	}
+}
+
+func listarIncidentes(cfg config.Config) error {
+	s, err := store.Open(cfg.Base)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	is, err := s.UltimosIncidentes(20)
+	if err != nil {
+		return err
+	}
+	if len(is) == 0 {
+		fmt.Println("sin incidentes registrados")
+		return nil
+	}
+	for _, i := range is {
+		estado := "ABIERTO"
+		if i.CerradoEn != nil {
+			estado = "cerrado " + i.CerradoEn.Local().Format("15:04")
+		}
+		fmt.Printf("%-14s %-28s %-9s %s  (%s)\n",
+			estado, i.Sujeto, i.Severidad,
+			i.AbiertoEn.Local().Format("02/01 15:04"), i.Detalle)
+	}
+	return nil
 }
 
 func listarContainers(cfg config.Config) error {
@@ -105,6 +137,8 @@ func correr(cfg config.Config, col *host.Collector) error {
 	defer persistencia.Stop()
 
 	cli := docker.New(cfg.DockerSocket)
+	pr := prober.New(clock.Real{}, cfg.ProbeTimeout)
+	motor := rules.NewMotor(s, clock.Real{}, rules.Defaults())
 
 	var a agregador
 	slog.Info("server-status arrancó", "base", cfg.Base, "muestreo", cfg.IntervaloMuestreo)
@@ -148,6 +182,41 @@ func correr(cfg config.Config, col *host.Collector) error {
 			}
 			if err := s.InsertContainerSamples(ms); err != nil {
 				slog.Error("no se pudieron guardar los containers", "err", err)
+			}
+
+			// Probes: uno por servicio, todos en paralelo. Son cuatro requests
+			// a internet y cada uno puede tardar hasta ProbeTimeout; en serie
+			// no entrarían en el ciclo del minuto.
+			resultados := make([]model.ProbeResult, len(cfg.Servicios))
+			var wg sync.WaitGroup
+			for i, srv := range cfg.Servicios {
+				wg.Add(1)
+				go func(i int, srv config.Servicio) {
+					defer wg.Done()
+					resultados[i] = pr.Probe(ctx, srv.Nombre, srv.Probe, srv.EstadoEsperado)
+				}(i, srv)
+			}
+			wg.Wait()
+
+			if err := s.InsertProbeResults(resultados); err != nil {
+				slog.Error("no se pudieron guardar los probes", "err", err)
+			}
+
+			cambios, err := motor.EvaluarProbes(resultados)
+			if err != nil {
+				slog.Error("falló el motor de reglas sobre los probes", "err", err)
+			}
+			deHost, err := motor.EvaluarHost(m)
+			if err != nil {
+				slog.Error("falló el motor de reglas sobre el host", "err", err)
+			}
+			// El plan 3 reemplaza este log por el aviso de Telegram.
+			for _, c := range append(cambios, deHost...) {
+				slog.Info("incidente",
+					"transicion", c.Tipo.String(),
+					"sujeto", c.Incidente.Sujeto,
+					"severidad", c.Incidente.Severidad,
+					"detalle", c.Incidente.Detalle)
 			}
 		}
 	}
