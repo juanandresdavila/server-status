@@ -8,15 +8,17 @@
   :root { color-scheme: light dark; --borde:#8883; }
   body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem; }
   h1 { font-size: 1.15rem; margin: 0 0 1rem; }
-  h1 a { font-size: .85rem; font-weight: 400; margin-left: 1rem; }
   #estado { font-size: .8rem; opacity: .6; margin-bottom: .5rem; }
   pre { font: 12.5px/1.6 ui-monospace, Menlo, monospace; margin: 0;
         border: 1px solid var(--borde); border-radius: .5rem; padding: .75rem;
         height: 75vh; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+{{ template "nav-css" }}
 </style>
 </head>
 <body>
-<h1>tail · {{ .Container }} <a href="/logs?container={{ .Container }}">← buscar</a></h1>
+{{ template "nav" .Nav }}
+
+<h1>tail · {{ .Container }}</h1>
 <div id="estado">conectando…</div>
 <pre id="salida"></pre>
 <script>

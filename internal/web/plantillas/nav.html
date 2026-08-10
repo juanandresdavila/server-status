@@ -1,0 +1,30 @@
+{{/*
+El header de las tres vistas. Vive en un solo archivo porque si no, agregar una
+vista es acordarse de tocar tres plantillas — y la que se olvida es la que
+queda sin salida.
+
+El CSS va en un define aparte y no en un <style> propio: las tres plantillas ya
+tienen el suyo en el <head>, y un <style> suelto en el <body> es válido de
+casualidad. Cada una lo incluye con {{ template "nav-css" }}.
+*/}}
+
+{{ define "nav-css" }}
+  .nav { display: flex; gap: 1.25rem; align-items: baseline; font-size: .9rem;
+         margin: 0 0 1.25rem; padding-bottom: .55rem;
+         border-bottom: 1px solid var(--borde); }
+  .nav a { color: inherit; text-decoration: none; opacity: .5; }
+  .nav a:hover { opacity: .85; }
+  .nav a.activo { opacity: 1; font-weight: 600; }
+{{ end }}
+
+{{ define "nav" }}
+<nav class="nav">
+  <a href="/?horas={{ .Horas }}"{{ if eq .Activo "panel" }} class="activo" aria-current="page"{{ end }}>panel</a>
+  <a href="/logs?horas={{ .Horas }}{{ with .Container }}&amp;container={{ . }}{{ end }}"{{ if eq .Activo "logs" }} class="activo" aria-current="page"{{ end }}>logs</a>
+  {{/* El tail no existe sin un container elegido: ofrecerlo igual es un 400
+       esperando a pasar. */}}
+  {{- with .Container }}
+  <a href="/logs/tail?container={{ . }}"{{ if eq $.Activo "tail" }} class="activo" aria-current="page"{{ end }}>tail · {{ . }}</a>
+  {{- end }}
+</nav>
+{{ end }}
