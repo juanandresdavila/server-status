@@ -28,11 +28,19 @@
        font-variant-numeric: tabular-nums; }
   td.err { font-variant-numeric: normal; opacity: .75; font-size: .82rem;
            font-family: ui-monospace, Menlo, monospace; }
+  /* Subrayado punteado y no color de link: son nueve filas y un azul por fila
+     convierte la tabla en un semáforo que compite con los estados. */
+  td a { color: inherit; text-decoration: underline dotted #8888;
+         text-underline-offset: .2rem; }
+  td a:hover { text-decoration: underline solid; }
   .bien { color: var(--ok); } .mal { color: var(--mal); } .tibio { color: var(--tibio); }
   .rangos a { margin-right: .75rem; font-size: .85rem; }
+{{ template "nav-css" }}
 </style>
 </head>
 <body>
+
+{{ template "nav" .Nav }}
 
 <h1>server-status</h1>
 <div class="sub">
@@ -56,7 +64,7 @@
 
 <h2>Historial</h2>
 <div class="rangos">
-  <a href="?horas=6">6 h</a><a href="?horas=24">24 h</a><a href="?horas=168">7 días</a><a href="?horas=720">30 días</a>
+  {{ range .Rangos }}<a href="?horas={{ .Valor }}">{{ .Texto }}</a>{{ end }}
 </div>
 <div class="graficos">
   <div id="g-cpu" class="grafico"></div>
@@ -84,7 +92,9 @@
   <tr><th>Nombre</th><th>Estado</th><th>Salud</th><th>CPU</th><th>Memoria</th><th>Reinicios</th></tr>
   {{ range .Containers }}
   <tr>
-    <td>{{ .Name }}</td>
+    {{/* El nombre lleva a sus logs: ver un container en unhealthy y tener que
+         ir a copiar el nombre a mano es fricción en el peor momento. */}}
+    <td><a href="/logs?container={{ .Name }}&amp;horas={{ $.Horas }}">{{ .Name }}</a></td>
     <td class="{{ if eq .State "running" }}bien{{ else }}mal{{ end }}">{{ .State }}</td>
     <td class="{{ if eq .Health "unhealthy" }}mal{{ else if eq .Health "healthy" }}bien{{ end }}">{{ .Health }}</td>
     <td>{{ printf "%.1f" .CPUPct }}%</td>

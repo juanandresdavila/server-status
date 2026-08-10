@@ -28,14 +28,36 @@ var plantillaPanel = template.Must(template.New("panel").Funcs(template.FuncMap{
 	"gib":  func(b uint64) float64 { return float64(b) / (1024 * 1024 * 1024) },
 	"mib":  func(b uint64) float64 { return float64(b) / (1024 * 1024) },
 	"hora": func(t time.Time) string { return t.Local().Format("02/01 15:04") },
-}).ParseFS(plantillas, "plantillas/panel.html", "plantillas/logs.html", "plantillas/tail.html"))
+}).ParseFS(plantillas, "plantillas/nav.html", "plantillas/panel.html",
+	"plantillas/logs.html", "plantillas/tail.html"))
+
+// nav es lo que el header necesita saber de la vista que lo está pintando.
+// Container puede venir vacío: sin container elegido no hay tail al que ir.
+type nav struct {
+	Activo    string // panel | logs | tail
+	Horas     int
+	Container string
+}
+
+// rangos son las opciones de tiempo, iguales en las tres vistas a propósito:
+// el header propaga ?horas= entre ellas, y un valor que el <select> de logs no
+// tuviera se vería como "última hora" mientras filtra por otra cosa.
+var rangos = []struct {
+	Valor int
+	Texto string
+}{{1, "última hora"}, {6, "6 horas"}, {24, "24 horas"}, {168, "7 días"}, {720, "30 días"}}
 
 type vistaPanel struct {
+	Nav        nav
 	Host       model.HostSample
 	Containers []model.ContainerSample
 	Probes     []model.ProbeResult
 	Incidentes []model.Incidente
 	Horas      int
+	Rangos     []struct {
+		Valor int
+		Texto string
+	}
 }
 
 func NuevoPanel(d Datos) http.Handler {
@@ -59,7 +81,10 @@ func NuevoPanel(d Datos) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		plantillaPanel.ExecuteTemplate(w, "tail.html", struct{ Container string }{c})
+		plantillaPanel.ExecuteTemplate(w, "tail.html", struct {
+			Nav       nav
+			Container string
+		}{nav{Activo: "tail", Horas: horasDe(r), Container: c}, c})
 	})
 
 	mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +110,7 @@ func NuevoPanel(d Datos) http.Handler {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		plantillaPanel.ExecuteTemplate(w, "logs.html", struct {
+			Nav          nav
 			Q, Container string
 			Horas        int
 			Containers   []string
@@ -94,12 +120,9 @@ func NuevoPanel(d Datos) http.Handler {
 				Texto string
 			}
 		}{
-			Q: q.Get("q"), Container: q.Get("container"), Horas: horas,
-			Containers: nombres, Lineas: lineas,
-			Rangos: []struct {
-				Valor int
-				Texto string
-			}{{1, "última hora"}, {24, "24 horas"}, {168, "7 días"}, {720, "30 días"}},
+			Nav: nav{Activo: "logs", Horas: horas, Container: q.Get("container")},
+			Q:   q.Get("q"), Container: q.Get("container"), Horas: horas,
+			Containers: nombres, Lineas: lineas, Rangos: rangos,
 		})
 	})
 
@@ -145,7 +168,8 @@ func NuevoPanel(d Datos) http.Handler {
 	})
 
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		v := vistaPanel{Horas: horasDe(r)}
+		v := vistaPanel{Horas: horasDe(r), Rangos: rangos}
+		v.Nav = nav{Activo: "panel", Horas: v.Horas}
 
 		hs, err := d.UltimasHostSamples(1)
 		if err != nil {

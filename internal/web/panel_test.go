@@ -91,6 +91,66 @@ func pedir(t *testing.T, ruta string) *httptest.ResponseRecorder {
 	return rec
 }
 
+// Las tres vistas son una sola herramienta: sin header no se llega a los logs
+// más que tipeando la URL, que es como estaba antes.
+func TestLasTresVistasTraenElHeader(t *testing.T) {
+	for _, ruta := range []string{"/", "/logs", "/logs/tail?container=comm-tool"} {
+		cuerpo := pedir(t, ruta).Body.String()
+		if !strings.Contains(cuerpo, `class="nav"`) {
+			t.Errorf("%s no trae el header", ruta)
+		}
+		for _, link := range []string{`href="/?horas=`, `href="/logs?horas=`} {
+			if !strings.Contains(cuerpo, link) {
+				t.Errorf("%s no linkea a %s", ruta, link)
+			}
+		}
+	}
+}
+
+func TestElHeaderMarcaLaVistaActiva(t *testing.T) {
+	casos := map[string]string{
+		"/":                              `href="/?horas=24" class="activo"`,
+		"/logs":                          `href="/logs?horas=24" class="activo"`,
+		"/logs/tail?container=comm-tool": `container=comm-tool" class="activo"`,
+	}
+	for ruta, quiero := range casos {
+		if cuerpo := pedir(t, ruta).Body.String(); !strings.Contains(cuerpo, quiero) {
+			t.Errorf("%s no marca la vista activa: falta %q", ruta, quiero)
+		}
+	}
+}
+
+// Elegir "7 días" en el panel y que /logs arranque de nuevo en 24 h es perder
+// el contexto en el momento en que más se lo necesita.
+func TestElRangoSePropagaEntreVistas(t *testing.T) {
+	if cuerpo := pedir(t, "/?horas=168").Body.String(); !strings.Contains(cuerpo, `href="/logs?horas=168`) {
+		t.Error("el panel no le pasa el rango a /logs")
+	}
+	if cuerpo := pedir(t, "/logs?horas=720").Body.String(); !strings.Contains(cuerpo, `href="/?horas=720"`) {
+		t.Error("/logs no le devuelve el rango al panel")
+	}
+}
+
+// Ver un container en unhealthy y tener que ir a copiar el nombre a mano es
+// justo la fricción que el header viene a sacar.
+func TestElContainerLinkeaASusLogs(t *testing.T) {
+	cuerpo := pedir(t, "/").Body.String()
+	if !strings.Contains(cuerpo, `href="/logs?container=supabase-db`) {
+		t.Error("el nombre del container en la tabla no lleva a sus logs")
+	}
+}
+
+// El tail necesita un container sí o sí: ofrecerlo sin uno elegido es un 400
+// esperando a pasar.
+func TestElTailEnElHeaderPideContainer(t *testing.T) {
+	if cuerpo := pedir(t, "/logs").Body.String(); strings.Contains(cuerpo, "/logs/tail") {
+		t.Error("sin container elegido el header no debería ofrecer el tail")
+	}
+	if cuerpo := pedir(t, "/logs?container=comm-tool").Body.String(); !strings.Contains(cuerpo, "/logs/tail?container=comm-tool") {
+		t.Error("con container elegido el header debería ofrecer el tail")
+	}
+}
+
 func TestPanelMuestraLoRecolectado(t *testing.T) {
 	rec := pedir(t, "/")
 	if rec.Code != 200 {
