@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -31,9 +32,15 @@ func TestLaPortadaNoFiltraNadaSensible(t *testing.T) {
 	}
 	salida := b.String()
 
+	// Ninguna IP tiene por qué salir a internet, ni la pública ni la de
+	// tailnet. Se busca el patrón y no los valores reales: este archivo vive
+	// en un repo público, y tener las IPs hardcodeadas acá era la fuga.
+	ipv4 := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+	if m := ipv4.FindString(salida); m != "" {
+		t.Errorf("la portada pública filtra una IP (%q)", m)
+	}
+
 	prohibido := map[string]string{
-		"<ip-publica>":       "la IP pública del VPS",
-		"<ip-tailnet>":     "la IP de tailnet",
 		"supabase-gym-kong":   "un nombre de container",
 		"comm-tool-db":        "un nombre de container",
 		"connection refused":  "el error crudo de un probe",

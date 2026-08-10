@@ -476,7 +476,7 @@ func TestLaPortadaNoFiltraNadaSensible(t *testing.T) {
 	salida := b.String()
 
 	prohibido := []string{
-		"<ip-publica>", "<ip-tailnet>", // IPs
+		"<ip-publica>", "<ip-tailnet>", // IPs (placeholders: los valores reales no entran al repo)
 		"supabase-gym-kong", "comm-tool-db", // nombres de containers
 		"connection refused", "dial tcp", // errores crudos de probe
 		"15.7", "GiB", "load", // métricas del host
