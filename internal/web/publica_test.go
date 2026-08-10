@@ -41,13 +41,13 @@ func TestLaPortadaNoFiltraNadaSensible(t *testing.T) {
 	}
 
 	prohibido := map[string]string{
-		"supabase-gym-kong":   "un nombre de container",
-		"comm-tool-db":        "un nombre de container",
-		"connection refused":  "el error crudo de un probe",
-		"dial tcp":            "el error crudo de un probe",
-		"/var/lib":            "una ruta del servidor",
-		"/opt/stacks":         "una ruta del servidor",
-		"GiB":                 "una métrica del host",
+		"supabase-gym-kong":  "un nombre de container",
+		"comm-tool-db":       "un nombre de container",
+		"connection refused": "el error crudo de un probe",
+		"dial tcp":           "el error crudo de un probe",
+		"/var/lib":           "una ruta del servidor",
+		"/opt/stacks":        "una ruta del servidor",
+		"GiB":                "una métrica del host",
 	}
 	for texto, que := range prohibido {
 		if strings.Contains(salida, texto) {

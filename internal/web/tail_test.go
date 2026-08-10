@@ -33,7 +33,7 @@ func (t *tailFalso) Seguir(ctx context.Context, container string, out chan<- mod
 func TestTailEmiteEventosSSE(t *testing.T) {
 	falso := &tailFalso{lineas: make(chan model.LineaLog, 4), cerrado: make(chan struct{})}
 	falso.lineas <- model.LineaLog{
-		TS: time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
+		TS:        time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
 		Container: "comm-tool", Stream: "stdout", Linea: "hola mundo",
 	}
 
