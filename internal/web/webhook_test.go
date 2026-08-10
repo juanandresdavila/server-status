@@ -66,9 +66,9 @@ func TestWebhookAceptaUnaEntregaFirmada(t *testing.T) {
 func TestWebhookRechazaSinFirmaValida(t *testing.T) {
 	cuerpo := `{"text":"/status"}`
 	casos := map[string]string{
-		"sin firma":        "",
-		"firma inventada":  "t=1,v1=abc",
-		"firma de otro":    firmarWH(`{"text":"otra cosa"}`, time.Now()),
+		"sin firma":       "",
+		"firma inventada": "t=1,v1=abc",
+		"firma de otro":   firmarWH(`{"text":"otra cosa"}`, time.Now()),
 	}
 	for nombre, firma := range casos {
 		h := &manejadorFalso{}
