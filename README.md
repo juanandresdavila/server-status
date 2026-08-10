@@ -10,10 +10,11 @@ falta que avisara.
 
 ## Estado
 
-✅ **Completo.** Fases 0 a 9. **Fases 0 a 3 y corriendo en el VPS.** El servicio
-muestrea el host cada 15 s, lee el estado de los 19 containers, pincha cada
-servicio por su URL pública y abre y cierra incidentes solo. Los avisos por
-Telegram llegan con la fase 4.
+✅ **Completo.** Fases 0 a 9, corriendo en el VPS. El servicio muestrea el host
+cada 15 s, lee el estado de los containers, pincha cada servicio por su URL
+pública, abre y cierra incidentes solo y avisa por Telegram. Sirve una portada
+pública estática, un panel privado por tailnet, búsqueda de logs con FTS5 y
+comandos por Telegram; un watchdog externo cubre el caso de que se muera todo.
 
 | Fase | Qué trae | Estado |
 |---|---|---|
@@ -22,10 +23,10 @@ Telegram llegan con la fase 4.
 | 2 | Estado de containers vía API de Docker | ✅ |
 | 3 | Probes de servicios e incidentes | ✅ |
 | 4 | Avisos por Telegram | ✅ |
-| 5 | Panel privado | ⏸️ |
-| 6 | Watchdog externo | ⏸️ |
-| 7 | Portada pública | ⏸️ |
-| 8 | Logs: búsqueda, tail y alertas | ⏸️ |
+| 5 | Panel privado | ✅ |
+| 6 | Watchdog externo | ✅ |
+| 7 | Portada pública | ✅ |
+| 8 | Logs: búsqueda, tail y alertas | ✅ |
 | 9 | Comandos por Telegram | ✅ |
 
 ## Diseño
