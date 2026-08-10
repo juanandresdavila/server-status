@@ -22,8 +22,10 @@ falta que avisara. Por eso la unit lleva `After=docker.service` pero **nunca**
 |---|---|---|
 | 0-1 | Scaffold, CI, métricas del host → SQLite | ✅ en el VPS |
 | 2-3 | Containers por la API de Docker, probes e incidentes | ✅ en el VPS |
-| 4 | Avisos por Telegram | 🔄 |
-| 5-9 | Panel, watchdog, portada pública, logs, comandos | ⏸️ |
+| 4 | Avisos por Telegram | ✅ en el VPS |
+| 5-9 | Panel, watchdog, portada pública, logs, comandos | ✅ en el VPS |
+
+Proyecto terminado: fases 0 a 9, todas corriendo.
 
 ## Required reading
 
@@ -210,6 +212,32 @@ Rutas en el servidor:
 | Secretos | `/etc/server-status/env` (`0600`) |
 | Base | `/var/lib/server-status/status.db` |
 | Unit | `/etc/systemd/system/server-status.service` |
+
+### Watchdog
+
+El check de Healthchecks.io se llama `server-status`, con **período de 5 min y
+gracia de 10**: el período tiene que coincidir con el ticker de `main.go`, y los
+15 minutos de silencio total son el margen que tolera un reinicio o un `make
+deploy` sin despertar a nadie. Avisa por Telegram y por mail.
+
+La URL de ping va en `HEALTHCHECKS_PING_URL`, en `/etc/server-status/env`. **Es
+un secreto**: quien la tenga late en tu nombre y deja el watchdog neutralizado
+sin que se note. Si falta, el proceso arranca igual y loguea `WARN watchdog
+apagado`.
+
+**Para reverificarlo sin tocar producción**, apuntar `url_publica` a una ruta que
+no existe y reiniciar. `url_publica` la usa **solo** el watchdog, así que romperla
+no afecta la portada ni los probes:
+
+```yaml
+url_publica: https://status.jadd.com.ar/no-existe
+```
+
+A los 5 minutos el journal tiene que decir `ERROR no se pudo latir err="la
+portada devolvió 404 Not Found"`. Verificado así el 9/8/2026: el DOWN llegó por
+Telegram y por mail al vencer la gracia, y el UP al revertir. **El 404 es a
+propósito**: prueba que el watchdog evalúa el contenido y no se conforma con que
+haya respuesta — que es justo el caso de Caddy sirviendo un archivo viejo con 200.
 
 **La copia para el backup se rehace a las 04:00**, antes de que el restic de la
 Mac mini corra a las 04:30. Copiar `status.db` en vivo **no sirve**: con WAL
