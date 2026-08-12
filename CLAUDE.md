@@ -244,9 +244,16 @@ Mac mini corra a las 04:30. Copiar `status.db` en vivo **no sirve**: con WAL
 puede quedar a mitad de una transacción. Para hacerla a mano:
 `server-status backup`.
 
-⚠️ **Verificar que el script de backup de la Mac mini incluya
-`/var/lib/server-status/backup/`.** Si no lo incluye, la copia se genera y no se
-la lleva nadie.
+✅ **Verificado el 12/8/2026: la Mac mini ya se lleva
+`/var/lib/server-status/backup/`.** Hasta esa fecha **no lo hacía**: la copia se
+generaba todos los días y no la levantaba nadie, así que estos 41 MB de historial
+no tenían respaldo. Se le agregó su propio `rsync` al script de la mini; **acá no
+hubo que tocar nada**, porque el backup es pull y este lado solo tiene que dejar
+el archivo listo.
+
+Si alguna vez se reescribe el script de la mini, esto es lo primero que se cae
+sin hacer ruido: `/var/lib/server-status/backup/` no cuelga de `/opt/stacks` ni
+de `/opt/backups`, que es de donde sale todo lo demás.
 
 ```bash
 ssh vps 'systemctl status server-status'
