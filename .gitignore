@@ -15,3 +15,6 @@ env
 # Herramientas
 .superpowers/
 .DS_Store
+
+# Worktrees de Claude Code (copias de trabajo locales, no versionables)
+.claude/worktrees/
