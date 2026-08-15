@@ -91,7 +91,8 @@ func status(d Datos) (string, error) {
 	}
 	if len(hs) > 0 {
 		h := hs[0]
-		fmt.Fprintf(&b, "\ndisco %.0f%% · memoria %.0f%% · uptime %.0f h",
+		fmt.Fprintf(&b, "\ncpu %.0f%% · disco %.0f%% · memoria %.0f%% · uptime %.0f h",
+			h.CPUPctAvg,
 			pct(h.DiskUsedBytes, h.DiskTotalBytes),
 			pct(h.MemUsedBytes, h.MemTotalBytes),
 			h.Uptime.Hours())
