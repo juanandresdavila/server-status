@@ -49,6 +49,7 @@ type datosFalsos struct{}
 
 func (datosFalsos) UltimasHostSamples(int) ([]model.HostSample, error) {
 	return []model.HostSample{{
+		CPUPctAvg:    37.2,
 		MemUsedBytes: 3_000_000_000, MemTotalBytes: 12_000_000_000,
 		DiskUsedBytes: 16_000_000_000, DiskTotalBytes: 100_000_000_000,
 		Uptime: 50 * time.Hour,
@@ -93,7 +94,7 @@ func ejecutar(t *testing.T, texto string) string {
 
 func TestStatusMuestraServiciosYRecursos(t *testing.T) {
 	r := ejecutar(t, "/status")
-	for _, q := range []string{"comm-tool", "sitio", "16", "disco"} {
+	for _, q := range []string{"comm-tool", "sitio", "16", "disco", "cpu", "37"} {
 		if !strings.Contains(strings.ToLower(r), strings.ToLower(q)) {
 			t.Errorf("/status no menciona %q:\n%s", q, r)
 		}
