@@ -67,6 +67,58 @@ func (datosFalsos) BuscarLogs(texto, container string, desde, hasta time.Time, l
 	}}, nil
 }
 
+// El export baja lo mismo que muestra la vista, pero como archivo de texto
+// plano: es la forma de llevarse los logs de un container a otra herramienta.
+func TestExportDeLogsDescargaTextoPlano(t *testing.T) {
+	h := web.NuevoPanel(datosFalsos{})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs/export?container=comm-tool&horas=6", nil))
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, quería 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, quería text/plain", ct)
+	}
+	cd := w.Header().Get("Content-Disposition")
+	if !strings.Contains(cd, "attachment") || !strings.Contains(cd, "comm-tool") {
+		t.Errorf("Content-Disposition = %q: tiene que ser attachment y nombrar el container", cd)
+	}
+	cuerpo := w.Body.String()
+	for _, q := range []string{"ERROR conexion rechazada", "comm-tool", "stderr"} {
+		if !strings.Contains(cuerpo, q) {
+			t.Errorf("el export no trae %q:\n%s", q, cuerpo)
+		}
+	}
+}
+
+// Sin container el archivo se llama "todos": el filtro vacío es válido en la
+// vista y el export tiene que aceptar lo mismo que ella.
+func TestExportDeLogsSinContainer(t *testing.T) {
+	h := web.NuevoPanel(datosFalsos{})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs/export", nil))
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, quería 200", w.Code)
+	}
+	if cd := w.Header().Get("Content-Disposition"); !strings.Contains(cd, "todos") {
+		t.Errorf("Content-Disposition = %q, sin container el nombre es 'todos'", cd)
+	}
+}
+
+// La vista de logs ofrece el export: un endpoint que solo se conoce por la
+// documentación es un endpoint que no se usa.
+func TestLaVistaDeLogsOfreceElExport(t *testing.T) {
+	h := web.NuevoPanel(datosFalsos{})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs?container=comm-tool", nil))
+
+	if !strings.Contains(w.Body.String(), "/logs/export") {
+		t.Errorf("la vista de logs no linkea /logs/export:\n%s", w.Body.String())
+	}
+}
+
 func TestPaginaDeLogsMuestraResultados(t *testing.T) {
 	cuerpo := pedir(t, "/logs?q=ERROR").Body.String()
 	if !strings.Contains(cuerpo, "conexion rechazada") {

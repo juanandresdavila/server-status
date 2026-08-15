@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -85,6 +86,37 @@ func NuevoPanel(d Datos) http.Handler {
 			Nav       nav
 			Container string
 		}{nav{Activo: "tail", Horas: horasDe(r), Container: c}, c})
+	})
+
+	// El export acepta los mismos filtros que la vista y devuelve texto plano
+	// para descargar. El tope es más alto que el de la vista: acá no hay
+	// navegador renderizando 10 000 divs, es un archivo que se abre en otro lado.
+	mux.HandleFunc("GET /logs/export", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		horas := horasDe(r)
+		hasta := time.Now()
+
+		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"),
+			hasta.Add(-time.Duration(horas)*time.Hour), hasta, 10000)
+		if err != nil {
+			http.Error(w, "no se pudieron buscar los logs", http.StatusInternalServerError)
+			return
+		}
+
+		nombre := q.Get("container")
+		if nombre == "" {
+			nombre = "todos"
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition",
+			fmt.Sprintf("attachment; filename=%q", fmt.Sprintf("logs-%s-%dh.txt", nombre, horas)))
+		// Vienen de la más nueva a la más vieja; se escriben al revés para que
+		// el archivo se lea como una terminal.
+		for i := len(lineas) - 1; i >= 0; i-- {
+			l := lineas[i]
+			fmt.Fprintf(w, "%s %s %s %s\n",
+				l.TS.UTC().Format(time.RFC3339), l.Container, l.Stream, l.Linea)
+		}
 	})
 
 	mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
