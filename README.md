@@ -13,8 +13,10 @@ falta que avisara.
 ✅ **Completo.** Fases 0 a 9, corriendo en el VPS. El servicio muestrea el host
 cada 15 s, lee el estado de los containers, pincha cada servicio por su URL
 pública, abre y cierra incidentes solo y avisa por Telegram. Sirve una portada
-pública estática, un panel privado por tailnet, búsqueda de logs con FTS5 y
-comandos por Telegram; un watchdog externo cubre el caso de que se muera todo.
+pública estática, un panel privado por tailnet (con historial graficado, tablas
+ordenables por columna, búsqueda de logs con FTS5, tail en vivo y export de
+logs como texto plano) y comandos por Telegram; un watchdog externo cubre el
+caso de que se muera todo.
 
 | Fase | Qué trae | Estado |
 |---|---|---|
@@ -34,6 +36,19 @@ comandos por Telegram; un watchdog externo cubre el caso de que se muera todo.
 - [Spec](docs/superpowers/specs/2026-08-08-server-status-design.md) — decisiones,
   arquitectura, modelo de datos e invariantes.
 - [Plan de las fases 0 y 1](docs/superpowers/plans/2026-08-08-server-status-fase-0-1.md)
+
+## Instalación
+
+**[INSTALLATION.md](INSTALLATION.md)** tiene la guía completa: requisitos, el
+script `deploy/install.sh` que deja todo instalado en un paso, el camino manual
+equivalente y cómo configurar los avisos, el watchdog y la portada. La versión
+corta:
+
+```bash
+git clone https://github.com/juanandresdavila/server-status.git
+cd server-status
+sudo ./deploy/install.sh
+```
 
 ## Desarrollo
 
