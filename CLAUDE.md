@@ -25,7 +25,11 @@ falta que avisara. Por eso la unit lleva `After=docker.service` pero **nunca**
 | 4 | Avisos por Telegram | ✅ en el VPS |
 | 5-9 | Panel, watchdog, portada pública, logs, comandos | ✅ en el VPS |
 
-Proyecto terminado: fases 0 a 9, todas corriendo.
+Proyecto terminado: fases 0 a 9, todas corriendo. Después de la fase 9 se
+sumaron mejoras de uso: export de logs como texto plano (`/logs/export`, mismo
+form que la vista), orden por columna en las tablas del panel, unidades con dos
+decimales, cpu promedio en el `/status` de Telegram e `INSTALLATION.md` con
+`deploy/install.sh`.
 
 ## Required reading
 
@@ -57,6 +61,11 @@ Usar `set -e` y comandos sueltos.
 
 **El deploy no necesita Go en el servidor.** Sin cgo, `GOOS=linux GOARCH=amd64
 go build` desde la Mac produce el binario exacto que corre en el VPS.
+
+**Para instalar desde cero en otro servidor** está `deploy/install.sh` (guía en
+`INSTALLATION.md`): idempotente, compila o usa `dist/`, crea usuario y
+directorios, y nunca pisa una config existente. `make deploy` sigue siendo el
+camino para ESTE VPS; el script es para terceros o para reinstalar.
 
 ## Arquitectura
 
