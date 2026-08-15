@@ -27,7 +27,7 @@ falta que avisara. Por eso la unit lleva `After=docker.service` pero **nunca**
 
 Proyecto terminado: fases 0 a 9, todas corriendo. Después de la fase 9 se
 sumaron mejoras de uso: export de logs como texto plano (`/logs/export`, mismo
-form que la vista), orden por columna en las tablas del panel, unidades con dos
+form que la vista), orden por columna en las tablas del panel, memoria y disco alternables entre % y GiB, unidades con dos
 decimales, cpu promedio en el `/status` de Telegram e `INSTALLATION.md` con
 `deploy/install.sh`.
 
