@@ -44,6 +44,9 @@
     {{ end }}
   </select>
   <button type="submit">buscar</button>
+  {{/* Mismo form, otro destino: el export baja como archivo lo que la vista
+       muestra, con los mismos filtros, sin duplicar controles. */}}
+  <button type="submit" formaction="/logs/export">exportar</button>
 </form>
 
 <div class="ayuda">
