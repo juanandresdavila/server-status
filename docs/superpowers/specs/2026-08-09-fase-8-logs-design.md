@@ -159,7 +159,10 @@ buscador rompe la consulta con un error de sintaxis de FTS5.
 - Los access logs de Caddy (§2).
 - El comando `/logs` de Telegram, que es la fase 9.
 - Cualquier forma de agregación o métricas derivadas de los logs.
-- Exportar a un sistema externo.
+- Exportar a un sistema externo. *(Nota del 2026-08-14: el panel sumó
+  `/logs/export`, que descarga los logs filtrados como archivo de texto. No
+  contradice este punto: "sistema externo" refería a shippear los logs a un
+  servicio de afuera —Loki, un SIEM—, no a bajárselos uno.)*
 
 ## 9. Invariantes que suma
 
