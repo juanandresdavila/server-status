@@ -14,7 +14,7 @@ falta que avisara.
 cada 15 s, lee el estado de los containers, pincha cada servicio por su URL
 pública, abre y cierra incidentes solo y avisa por Telegram. Sirve una portada
 pública estática, un panel privado por tailnet (con historial graficado, tablas
-ordenables por columna, búsqueda de logs con FTS5, tail en vivo y export de
+ordenables por columna, memoria y disco alternables entre % y GiB, búsqueda de logs con FTS5, tail en vivo y export de
 logs como texto plano) y comandos por Telegram; un watchdog externo cubre el
 caso de que se muera todo.
 
