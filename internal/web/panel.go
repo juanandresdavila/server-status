@@ -26,7 +26,7 @@ type Datos interface {
 
 var plantillaPanel = template.Must(template.New("panel").Funcs(template.FuncMap{
 	"pct":  pct,
-	"gib":  func(b uint64) float64 { return float64(b) / (1024 * 1024 * 1024) },
+	"gib":  gib,
 	"mib":  func(b uint64) float64 { return float64(b) / (1024 * 1024) },
 	"hora": func(t time.Time) string { return t.Local().Format("02/01 15:04") },
 }).ParseFS(plantillas, "plantillas/nav.html", "plantillas/panel.html",
@@ -180,12 +180,21 @@ func NuevoPanel(d Datos) http.Handler {
 			Mem   []float64 `json:"mem"`
 			Disco []float64 `json:"disco"`
 			Load  []float64 `json:"load"`
+			// Memoria y disco van también en GiB: el toggle de unidad del
+			// panel cambia el gráfico sin otro round-trip. Los totales son
+			// para la escala del eje y salen de la última muestra.
+			MemGiB        []float64 `json:"mem_gib"`
+			DiscoGiB      []float64 `json:"disco_gib"`
+			MemTotalGiB   float64   `json:"mem_total_gib"`
+			DiscoTotalGiB float64   `json:"disco_total_gib"`
 		}{
-			TS:    make([]int64, 0, len(muestras)),
-			CPU:   make([]float64, 0, len(muestras)),
-			Mem:   make([]float64, 0, len(muestras)),
-			Disco: make([]float64, 0, len(muestras)),
-			Load:  make([]float64, 0, len(muestras)),
+			TS:       make([]int64, 0, len(muestras)),
+			CPU:      make([]float64, 0, len(muestras)),
+			Mem:      make([]float64, 0, len(muestras)),
+			Disco:    make([]float64, 0, len(muestras)),
+			Load:     make([]float64, 0, len(muestras)),
+			MemGiB:   make([]float64, 0, len(muestras)),
+			DiscoGiB: make([]float64, 0, len(muestras)),
 		}
 		for _, m := range muestras {
 			salida.TS = append(salida.TS, m.TS.Unix())
@@ -193,6 +202,12 @@ func NuevoPanel(d Datos) http.Handler {
 			salida.Mem = append(salida.Mem, pct(m.MemUsedBytes, m.MemTotalBytes))
 			salida.Disco = append(salida.Disco, pct(m.DiskUsedBytes, m.DiskTotalBytes))
 			salida.Load = append(salida.Load, m.Load1)
+			salida.MemGiB = append(salida.MemGiB, gib(m.MemUsedBytes))
+			salida.DiscoGiB = append(salida.DiscoGiB, gib(m.DiskUsedBytes))
+		}
+		if n := len(muestras); n > 0 {
+			salida.MemTotalGiB = gib(muestras[n-1].MemTotalBytes)
+			salida.DiscoTotalGiB = gib(muestras[n-1].DiskTotalBytes)
 		}
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -250,3 +265,5 @@ func pct(usado, total uint64) float64 {
 	}
 	return float64(usado) * 100 / float64(total)
 }
+
+func gib(b uint64) float64 { return float64(b) / (1024 * 1024 * 1024) }

@@ -259,6 +259,49 @@ func TestApiSeriesDevuelveJSONConLargosParejos(t *testing.T) {
 	}
 }
 
+// Memoria y disco también viajan en GiB: el panel deja alternar la unidad y
+// los gráficos necesitan la serie ya convertida, con el total para la escala.
+func TestApiSeriesTraeLasSeriesEnGiB(t *testing.T) {
+	rec := pedir(t, "/api/series?horas=24")
+	var p struct {
+		TS            []int64   `json:"ts"`
+		MemGiB        []float64 `json:"mem_gib"`
+		DiscoGiB      []float64 `json:"disco_gib"`
+		MemTotalGiB   float64   `json:"mem_total_gib"`
+		DiscoTotalGiB float64   `json:"disco_total_gib"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+		t.Fatalf("no es JSON válido: %v", err)
+	}
+	for nombre, serie := range map[string][]float64{"mem_gib": p.MemGiB, "disco_gib": p.DiscoGiB} {
+		if len(serie) != len(p.TS) {
+			t.Errorf("%s tiene %d puntos y ts tiene %d", nombre, len(serie), len(p.TS))
+		}
+	}
+	// 3 GB decimales son ~2.794 GiB. Tolerancia y no ==: gotcha conocido del repo.
+	cerca := func(got, quiere float64) bool { return got > quiere-0.01 && got < quiere+0.01 }
+	if len(p.MemGiB) == 0 || !cerca(p.MemGiB[0], 2.79) {
+		t.Errorf("mem_gib[0] = %v, quería ~2.79 (3e9 bytes)", p.MemGiB)
+	}
+	if !cerca(p.MemTotalGiB, 11.18) {
+		t.Errorf("mem_total_gib = %v, quería ~11.18 (12e9 bytes)", p.MemTotalGiB)
+	}
+	if !cerca(p.DiscoTotalGiB, 93.13) {
+		t.Errorf("disco_total_gib = %v, quería ~93.13 (100e9 bytes)", p.DiscoTotalGiB)
+	}
+}
+
+// Las tarjetas de memoria y disco llevan las dos unidades en el HTML: el
+// toggle es del navegador y no puede depender de otro request al server.
+func TestLasTarjetasDeMemoriaYDiscoAlternanUnidad(t *testing.T) {
+	cuerpo := pedir(t, "/").Body.String()
+	for _, q := range []string{"data-gib", "data-pct", "GiB"} {
+		if !strings.Contains(cuerpo, q) {
+			t.Errorf("el panel no trae %q: sin eso no hay toggle de unidad", q)
+		}
+	}
+}
+
 // El parámetro es entrada de afuera aunque el panel sea privado: cualquier
 // basura tiene que caer al default en vez de romper.
 func TestHorasInvalidasCaenAlDefault(t *testing.T) {
