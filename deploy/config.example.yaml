@@ -56,19 +56,22 @@ servicios:
     probe: https://comm.jadd.com.ar/health
     containers: [comm-tool, comm-tool-db]
 
-  # Los Supabase no exponen NINGÚN endpoint que dé 2xx sin autenticación:
-  # /auth/v1/health y /rest/v1/ devuelven 401 desde el gateway. Se usa
-  # /auth/v1/authorize, que da 400 porque el request llegó hasta GoTrue y le
-  # faltaban parámetros. Ese 400 prueba el camino completo; el 401, solo que
-  # el gateway está vivo.
+  # Los Supabase no dejan pasar NADA por el gateway sin apikey, así que el
+  # probe la manda en el header: `apikey_env` es el NOMBRE de la variable de
+  # entorno con la anon key (el valor va en /etc/server-status/env, nunca acá).
+  # Con eso alcanza /auth/v1/health, que es el healthcheck real de GoTrue y
+  # responde 200. Antes se pinchaba /auth/v1/authorize esperando un 400: era el
+  # único endpoint sin apikey, pero ese 400 es un error de validación y GoTrue
+  # lo LOGUEA como error — un falso error por minuto, para siempre, en el log
+  # que uno mira justo cuando algo anda mal.
   - nombre: study-master
-    probe: https://supabase-sm.jadd.com.ar/auth/v1/authorize
-    estado_esperado: 400
+    probe: https://supabase-sm.jadd.com.ar/auth/v1/health
+    apikey_env: SUPABASE_SM_ANON_KEY
     containers: [supabase-kong, supabase-auth, supabase-rest, supabase-db,
                  supabase-storage, supabase-meta, supabase-imgproxy]
 
   - nombre: gym-tracker
-    probe: https://supabase-gym.jadd.com.ar/auth/v1/authorize
-    estado_esperado: 400
+    probe: https://supabase-gym.jadd.com.ar/auth/v1/health
+    apikey_env: SUPABASE_GYM_ANON_KEY
     containers: [supabase-gym-kong, supabase-gym-auth, supabase-gym-rest,
                  supabase-gym-db, supabase-gym-meta, supabase-gym-studio]

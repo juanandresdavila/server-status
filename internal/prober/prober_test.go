@@ -18,7 +18,7 @@ func TestProbeOKConDoscientos(t *testing.T) {
 	defer srv.Close()
 
 	p := prober.New(clock.NewFake(time.Now()), 5*time.Second)
-	got := p.Probe(context.Background(), "x", srv.URL, 0)
+	got := p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: srv.URL})
 
 	if !got.OK {
 		t.Errorf("OK = false, quería true. Error: %q", got.Error)
@@ -41,7 +41,7 @@ func TestProbeAceptaRedirecciones(t *testing.T) {
 	defer srv.Close()
 
 	p := prober.New(clock.NewFake(time.Now()), 5*time.Second)
-	if got := p.Probe(context.Background(), "x", srv.URL, 0); !got.OK {
+	if got := p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: srv.URL}); !got.OK {
 		t.Errorf("un 301 se tomó como caída: %+v", got)
 	}
 }
@@ -53,7 +53,7 @@ func TestProbeFallaConQuinientos(t *testing.T) {
 	defer srv.Close()
 
 	p := prober.New(clock.NewFake(time.Now()), 5*time.Second)
-	got := p.Probe(context.Background(), "x", srv.URL, 0)
+	got := p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: srv.URL})
 
 	if got.OK {
 		t.Error("OK = true con un 500")
@@ -69,7 +69,7 @@ func TestProbeFallaConQuinientos(t *testing.T) {
 func TestProbeFallaSiNoHayNadieEscuchando(t *testing.T) {
 	p := prober.New(clock.NewFake(time.Now()), 2*time.Second)
 	// Puerto cerrado del loopback: falla al conectar, sin respuesta HTTP.
-	got := p.Probe(context.Background(), "x", "http://127.0.0.1:1/", 0)
+	got := p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: "http://127.0.0.1:1/"})
 
 	if got.OK {
 		t.Error("OK = true contra un puerto cerrado")
@@ -90,7 +90,7 @@ func TestProbeUsaElRelojInyectado(t *testing.T) {
 	momento := time.Date(2026, 8, 9, 3, 0, 0, 0, time.UTC)
 	p := prober.New(clock.NewFake(momento), 5*time.Second)
 
-	if got := p.Probe(context.Background(), "x", srv.URL, 0); !got.TS.Equal(momento) {
+	if got := p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: srv.URL}); !got.TS.Equal(momento) {
 		t.Errorf("TS = %v, quería %v", got.TS, momento)
 	}
 }
@@ -105,7 +105,7 @@ func TestProbeCortaPorTimeout(t *testing.T) {
 	defer func() { close(bloqueado); srv.Close() }()
 
 	p := prober.New(clock.NewFake(time.Now()), 100*time.Millisecond)
-	got := p.Probe(context.Background(), "x", srv.URL, 0)
+	got := p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: srv.URL})
 
 	if got.OK {
 		t.Error("OK = true contra un servidor que nunca responde")
@@ -115,10 +115,10 @@ func TestProbeCortaPorTimeout(t *testing.T) {
 	}
 }
 
-// Algunos servicios no exponen ningún endpoint que devuelva 2xx sin
-// autenticación. Los Supabase del VPS son así: /auth/v1/authorize devuelve 400
-// porque GoTrue recibió el request y le faltaban parámetros — y ese 400 prueba
-// más que un 401, que lo puede emitir el gateway sin que auth esté vivo.
+// Hay servicios cuyo endpoint sano no devuelve 2xx: el único que contesta sin
+// autenticación devuelve un 4xx, y ese código concreto ES la señal de que está
+// vivo. Declararlo explícito evita tener que elegir entre no monitorearlo o
+// monitorearlo con una falla permanente.
 func TestProbeConEstadoEsperadoExplicito(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -127,11 +127,11 @@ func TestProbeConEstadoEsperadoExplicito(t *testing.T) {
 
 	p := prober.New(clock.NewFake(time.Now()), 5*time.Second)
 
-	if got := p.Probe(context.Background(), "x", srv.URL, 400); !got.OK {
+	if got := p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: srv.URL, Esperado: 400}); !got.OK {
 		t.Errorf("un 400 esperado se tomó como caída: %+v", got)
 	}
 	// Y el mismo 400 sin declararlo sigue siendo una falla.
-	if got := p.Probe(context.Background(), "x", srv.URL, 0); got.OK {
+	if got := p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: srv.URL}); got.OK {
 		t.Error("un 400 no declarado se tomó como sano")
 	}
 }
@@ -146,7 +146,33 @@ func TestEstadoEsperadoRechazaCualquierOtroCodigo(t *testing.T) {
 	defer srv.Close()
 
 	p := prober.New(clock.NewFake(time.Now()), 5*time.Second)
-	if got := p.Probe(context.Background(), "x", srv.URL, 400); got.OK {
+	if got := p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: srv.URL, Esperado: 400}); got.OK {
 		t.Errorf("esperaba 400 y llegó 200, pero lo dio por sano: %+v", got)
+	}
+}
+
+// El header `apikey` existe por los Supabase: su gateway rechaza con 401 todo
+// lo que no lo traiga, y sin él el healthcheck de GoTrue es inalcanzable.
+func TestProbeMandaLaAPIKeyCuandoEstaCargada(t *testing.T) {
+	var recibida string
+	var hubo bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recibida, hubo = r.Header.Get("apikey"), r.Header.Values("apikey") != nil
+	}))
+	defer srv.Close()
+
+	p := prober.New(clock.NewFake(time.Now()), 5*time.Second)
+	p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: srv.URL, APIKey: "sarasa"})
+
+	if recibida != "sarasa" {
+		t.Errorf("header apikey = %q, quería \"sarasa\"", recibida)
+	}
+
+	// Y sin APIKey el header no va: mandarlo vacío no es lo mismo que no
+	// mandarlo, y algún gateway distingue.
+	recibida, hubo = "", false
+	p.Probe(context.Background(), prober.Objetivo{Servicio: "x", URL: srv.URL})
+	if hubo {
+		t.Errorf("mandó el header apikey sin tener una: %q", recibida)
 	}
 }

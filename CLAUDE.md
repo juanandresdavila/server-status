@@ -156,10 +156,24 @@ a tocarlos todos cada vez que se agrega una.
   argument" en el bind que no dice nada de longitudes.
 - **`df -h` redondea para arriba.** Muestra "16G" donde el binario dice 15,0 GiB.
   No es una diferencia: verificado contra `statfs` byte a byte.
-- **Los Supabase no exponen ningún endpoint que dé 2xx sin `apikey`.**
-  `/auth/v1/health` y `/rest/v1/` devuelven 401 desde Kong. Se usa
-  `/auth/v1/authorize` con `estado_esperado: 400`, porque ese 400 lo emite GoTrue
-  después de que el request atravesó el gateway — prueba bastante más que un 401.
+- **Los Supabase no dejan pasar nada por Kong sin `apikey`.** El probe la manda
+  en el header: en la config, `apikey_env` guarda el NOMBRE de la variable
+  (`SUPABASE_SM_ANON_KEY`, `SUPABASE_GYM_ANON_KEY`) y el valor vive en
+  `/etc/server-status/env`. Con eso `/auth/v1/health` —el healthcheck real de
+  GoTrue— devuelve 200. Hasta el 18/8/2026 se pinchaba `/auth/v1/authorize` con
+  `estado_esperado: 400`, el único endpoint que Kong deja pasar pelado: andaba,
+  pero ese 400 es un `validation_failed` que GoTrue **loguea como error**, así
+  que el monitor dejaba un falso error por minuto —dos, uno por Supabase— en el
+  log que uno mira justo cuando algo se rompió de verdad.
+- **Los dos stacks de Supabase publican el alias `kong` en la red `edge`.** El
+  Caddyfile de `/opt/stacks/edge` decía `reverse_proxy kong:8000` para
+  `supabase-sm`, y Docker resolvía ese alias a cualquiera de los dos: todo el
+  tráfico público de study-master estaba entrando por el Kong del gym. El check
+  daba verde igual, porque `/auth/v1/authorize` contesta lo mismo en los dos.
+  Arreglado el 18/8/2026 apuntando al nombre del container (`supabase-kong:8000`).
+  Con `apikey` el error se ve enseguida: la anon key de un stack da 401 en el
+  otro. **Ojo con `sed -i` sobre un archivo bind-mounteado**: cambia el inode y
+  el container sigue viendo el viejo. Hay que reiniciarlo.
 - **`/containers/{id}/stats` sin `stream=false` no termina nunca.** Deja la
   conexión abierta mandando una muestra por segundo.
 - **La memoria de un container se calcula descontando `inactive_file`**, igual que
