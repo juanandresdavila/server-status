@@ -60,8 +60,12 @@ type Servicio struct {
 	Probe  string `yaml:"probe"`
 	// EstadoEsperado en 0 significa "cualquier 2xx o 3xx". Con un código
 	// explícito, ese y solo ese cuenta como sano.
-	EstadoEsperado int      `yaml:"estado_esperado"`
-	Containers     []string `yaml:"containers"`
+	EstadoEsperado int `yaml:"estado_esperado"`
+	// APIKeyEnv es el NOMBRE de la variable de entorno con la apikey del
+	// probe, nunca su valor: la config no lleva secretos (invariante 8) y
+	// además este archivo se copia del ejemplo, que vive en un repo público.
+	APIKeyEnv  string   `yaml:"apikey_env"`
+	Containers []string `yaml:"containers"`
 }
 
 func Load(ruta string) (Config, error) {

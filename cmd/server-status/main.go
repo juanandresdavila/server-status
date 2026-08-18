@@ -204,6 +204,16 @@ func correr(cfg config.Config, col *host.Collector) error {
 		slog.Warn("panel apagado: falta panel_addr en la config")
 	}
 
+	// Una apikey declarada y vacía no rompe el arranque, pero el probe se va
+	// a comer un 401 y abrir un incidente falso. Decirlo acá cuesta una línea;
+	// descubrirlo desde el aviso de las 3 de la mañana, bastante más.
+	for _, srv := range cfg.Servicios {
+		if srv.APIKeyEnv != "" && os.Getenv(srv.APIKeyEnv) == "" {
+			slog.Warn("probe sin apikey: el gateway lo va a rechazar",
+				"servicio", srv.Nombre, "variable", srv.APIKeyEnv)
+		}
+	}
+
 	wd := watchdog.New(cfg.URLPublica, os.Getenv("HEALTHCHECKS_PING_URL"), clock.Real{}, 3*time.Minute)
 	if !wd.Configurado() {
 		slog.Warn("watchdog apagado: falta HEALTHCHECKS_PING_URL")
@@ -283,7 +293,15 @@ func correr(cfg config.Config, col *host.Collector) error {
 				wg.Add(1)
 				go func(i int, srv config.Servicio) {
 					defer wg.Done()
-					resultados[i] = pr.Probe(ctx, srv.Nombre, srv.Probe, srv.EstadoEsperado)
+					resultados[i] = pr.Probe(ctx, prober.Objetivo{
+						Servicio: srv.Nombre,
+						URL:      srv.Probe,
+						Esperado: srv.EstadoEsperado,
+						// La config guarda el nombre de la variable; el valor sale
+						// del entorno. Con APIKeyEnv vacío, Getenv devuelve "" y el
+						// probe sale pelado, como siempre.
+						APIKey: os.Getenv(srv.APIKeyEnv),
+					})
 				}(i, srv)
 			}
 			wg.Wait()

@@ -30,24 +30,36 @@ func New(clk clock.Clock, timeout time.Duration) *Prober {
 	}
 }
 
+// Objetivo es lo que hay que pinchar. Va como struct y no como una lista de
+// parámetros sueltos porque ya son cuatro y dos son strings: en el orden
+// posicional, confundir URL con APIKey compila igual.
+type Objetivo struct {
+	Servicio string
+	URL      string
+	// Esperado en 0 significa "cualquier 2xx o 3xx". Con un código explícito,
+	// ese y solo ese cuenta como sano.
+	Esperado int
+	// APIKey, si no está vacía, viaja en el header `apikey`. Existe por los
+	// Supabase: su gateway rechaza con 401 todo lo que no la traiga, así que
+	// sin esto el único endpoint alcanzable sería uno que NO es un healthcheck.
+	// El valor sale del entorno, nunca de la config — invariante 8 del spec.
+	APIKey string
+}
+
 // Probe hace un GET y clasifica el resultado. Nunca devuelve error: una falla
 // del probe ES el dato.
-//
-// `esperado` en 0 significa "cualquier 2xx o 3xx". Con un código explícito, ese
-// y solo ese cuenta como sano. Existe porque hay servicios sin ningún endpoint
-// que devuelva 2xx sin autenticación: los Supabase del VPS responden 400 en
-// /auth/v1/authorize, y ese 400 prueba que el request atravesó el gateway y
-// llegó a GoTrue — bastante más de lo que prueba un 401, que el gateway puede
-// emitir solo.
-func (p *Prober) Probe(ctx context.Context, servicio, url string, esperado int) model.ProbeResult {
-	r := model.ProbeResult{TS: p.clk.Now(), Servicio: servicio}
+func (p *Prober) Probe(ctx context.Context, o Objetivo) model.ProbeResult {
+	r := model.ProbeResult{TS: p.clk.Now(), Servicio: o.Servicio}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.URL, nil)
 	if err != nil {
 		r.Error = fmt.Sprintf("url inválida: %v", err)
 		return r
 	}
 	req.Header.Set("User-Agent", "server-status")
+	if o.APIKey != "" {
+		req.Header.Set("apikey", o.APIKey)
+	}
 
 	// La latencia se mide con time.Since y no con el reloj inyectado a
 	// propósito: es una duración real, no una marca de tiempo lógica.
@@ -64,12 +76,12 @@ func (p *Prober) Probe(ctx context.Context, servicio, url string, esperado int) 
 
 	r.StatusCode = resp.StatusCode
 
-	if esperado != 0 {
-		if resp.StatusCode == esperado {
+	if o.Esperado != 0 {
+		if resp.StatusCode == o.Esperado {
 			r.OK = true
 			return r
 		}
-		r.Error = fmt.Sprintf("HTTP %s (esperaba %d)", resp.Status, esperado)
+		r.Error = fmt.Sprintf("HTTP %s (esperaba %d)", resp.Status, o.Esperado)
 		return r
 	}
 

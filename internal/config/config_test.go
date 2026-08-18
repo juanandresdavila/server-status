@@ -177,3 +177,25 @@ func TestZonaInvalidaFalla(t *testing.T) {
 		t.Fatal("quería error con una zona inválida, no hubo")
 	}
 }
+
+// La config guarda el NOMBRE de la variable, nunca la apikey: este archivo se
+// copia del ejemplo, que vive en un repo público.
+func TestServicioLeeElNombreDeLaVariableDeLaAPIKey(t *testing.T) {
+	c, err := config.Load(escribir(t, `base: /tmp/x.db
+servicios:
+  - nombre: study-master
+    probe: https://ejemplo.invalid/auth/v1/health
+    apikey_env: SUPABASE_SM_ANON_KEY
+  - nombre: sitio
+    probe: https://ejemplo.invalid/
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := c.Servicios[0].APIKeyEnv; got != "SUPABASE_SM_ANON_KEY" {
+		t.Errorf("APIKeyEnv = %q", got)
+	}
+	if got := c.Servicios[1].APIKeyEnv; got != "" {
+		t.Errorf("APIKeyEnv = %q en un servicio que no la declara, quería vacío", got)
+	}
+}
