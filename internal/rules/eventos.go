@@ -81,7 +81,18 @@ func DetectarReinicioContainers(antes, despues []model.ContainerSample, ahora ti
 		// después del deploy.
 		case anterior.IsZero() || c.StartedAt.IsZero():
 			continue
-		case c.StartedAt.After(anterior):
+		// La comparación va truncada al SEGUNDO porque esa es la resolución con
+		// la que container_samples guarda started_at. Docker devuelve
+		// nanosegundos —05:00:38.932553068Z— y al volver de la base son
+		// 05:00:38.000, o sea SIEMPRE un poco menos que el valor vivo. Sin
+		// truncar, todos los containers parecen recién reiniciados en cada tick:
+		// pasó en producción el 22/08/2026 y mandó un aviso por minuto.
+		//
+		// Es la misma trampa que la del cursor de logs, que se resolvió al revés
+		// (guardando nanosegundos). Acá alcanza con igualar la granularidad de
+		// la comparación a la del almacenamiento: dos arranques dentro del mismo
+		// segundo no son dos reinicios que valga la pena distinguir.
+		case c.StartedAt.Truncate(time.Second).After(anterior.Truncate(time.Second)):
 			reiniciados = append(reiniciados, c.Name)
 		}
 	}
