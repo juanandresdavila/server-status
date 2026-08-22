@@ -20,6 +20,7 @@ casualidad. Cada una lo incluye con {{ template "nav-css" }}.
 {{ define "nav" }}
 <nav class="nav">
   <a href="/?horas={{ .Horas }}"{{ if eq .Activo "panel" }} class="activo" aria-current="page"{{ end }}>panel</a>
+  <a href="/eventos?horas={{ .Horas }}"{{ if eq .Activo "eventos" }} class="activo" aria-current="page"{{ end }}>eventos</a>
   <a href="/logs?horas={{ .Horas }}{{ with .Container }}&amp;container={{ . }}{{ end }}"{{ if eq .Activo "logs" }} class="activo" aria-current="page"{{ end }}>logs</a>
   {{/* El tail no existe sin un container elegido: ofrecerlo igual es un 400
        esperando a pasar. */}}

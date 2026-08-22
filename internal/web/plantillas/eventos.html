@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eventos · server-status</title>
+<style>
+  :root { color-scheme: light dark; --borde:#8883; --err:#c0392b; --warn:#b7791f; --ok:#2e7d32; }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.5 system-ui, -apple-system, sans-serif; margin: 0; padding: 1.5rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+  form { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+  input, select, button { font: inherit; padding: .4rem .6rem; border-radius: .4rem;
+                          border: 1px solid var(--borde); background: transparent; color: inherit; }
+  .rango { display: flex; gap: .35rem; align-items: center; }
+  .rango label { font-size: .8rem; opacity: .6; }
+  .ayuda { font-size: .8rem; opacity: .6; margin-bottom: 1rem; }
+
+  /* Una línea de tiempo y no una tabla: lo que se busca acá es "qué pasó
+     anoche", y eso se lee de arriba abajo, no columna por columna. */
+  .linea { border-left: 2px solid var(--borde); margin-left: .5rem; padding-left: 1rem; }
+  .n { position: relative; padding: .55rem 0; border-bottom: 1px solid var(--borde); }
+  .n:last-child { border-bottom: 0; }
+  .n::before { content: ""; position: absolute; left: -1.32rem; top: 1rem;
+               width: .5rem; height: .5rem; border-radius: 50%; background: var(--borde); }
+  .n.critical::before { background: var(--err); }
+  .n.warning::before  { background: var(--warn); }
+  .n.info::before     { background: var(--ok); }
+  .cab { display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap; }
+  .cuando { font: 12.5px ui-monospace, Menlo, monospace; opacity: .6; }
+  .titulo { font-weight: 600; }
+  .critical .titulo { color: var(--err); }
+  .warning .titulo  { color: var(--warn); }
+  .origen { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
+            opacity: .5; border: 1px solid var(--borde); border-radius: .25rem;
+            padding: .05rem .35rem; }
+  .detalle { font: 12.5px/1.55 ui-monospace, Menlo, monospace; opacity: .75;
+             margin-top: .2rem; white-space: pre-wrap; word-break: break-word; }
+  .vacio { opacity: .6; padding: 1.5rem 0; }
+{{ template "nav-css" }}
+</style>
+</head>
+<body>
+{{ template "nav" .Nav }}
+
+<h1>eventos</h1>
+
+<form method="get">
+  <select name="sev">
+    <option value="info"     {{ if eq .Sev "info" }}selected{{ end }}>todo</option>
+    <option value="warning"  {{ if eq .Sev "warning" }}selected{{ end }}>warnings y peor</option>
+    <option value="critical" {{ if eq .Sev "critical" }}selected{{ end }}>solo críticos</option>
+  </select>
+  <select name="horas">
+    {{ range .Rangos }}
+    <option value="{{ .Valor }}" {{ if eq .Valor $.Horas }}selected{{ end }}>{{ .Texto }}</option>
+    {{ end }}
+  </select>
+  <span class="rango">
+    <label for="desde">desde</label>
+    <input type="datetime-local" id="desde" name="desde" value="{{ .Ventana.ValorDesde }}">
+    <label for="hasta">hasta</label>
+    <input type="datetime-local" id="hasta" name="hasta" value="{{ .Ventana.ValorHasta }}">
+  </span>
+  <button type="submit">ver</button>
+</form>
+
+<div class="ayuda">
+  Todo lo que pasó, en orden: incidentes que abrieron y cerraron, reinicios del
+  servidor y de containers, y las líneas de log de nivel <strong>ERROR</strong>.
+  Con desde/hasta cargados manda ese rango y el desplegable de horas queda ignorado.
+</div>
+
+<div class="linea">
+{{- range .Novedades }}
+  <div class="n {{ .Severidad }}">
+    <div class="cab">
+      <span class="cuando">{{ .Cuando.Local.Format "02/01 15:04:05" }}</span>
+      <span class="titulo">{{ .Titulo }}</span>
+      <span class="origen">{{ .Origen }}</span>
+    </div>
+    {{- with .Detalle }}
+    <div class="detalle">{{ . }}</div>
+    {{- end }}
+  </div>
+{{- else }}
+  <div class="vacio">Sin novedades en esta ventana. Es la respuesta que uno quiere.</div>
+{{- end }}
+</div>
+</body>
+</html>
