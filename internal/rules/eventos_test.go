@@ -172,3 +172,37 @@ func TestSinRebootElReinicioDeContainersEsSuPropioEvento(t *testing.T) {
 		t.Fatalf("dio %+v, quería un solo container_restart", evs)
 	}
 }
+
+// EL BUG QUE LLEGÓ A PRODUCCIÓN el 22/08/2026: el detector avisaba que los 21
+// containers se habían reiniciado, una vez POR MINUTO, para siempre.
+//
+// Docker devuelve StartedAt con nanosegundos (05:00:38.932553068Z) y
+// container_samples lo guarda en SEGUNDOS. Al releerlo vuelve 05:00:38.000, que
+// es SIEMPRE anterior al valor vivo, así que la comparación daba "arrancó de
+// nuevo" en cada tick. Es la misma trampa que ya estaba documentada para el
+// cursor de logs, con otro campo.
+func TestLaPerdidaDeSubsegundoAlGuardarNoEsUnReinicio(t *testing.T) {
+	vivo := time.Date(2026, 8, 22, 5, 0, 38, 932553068, time.UTC)
+	comoVuelveDeLaBase := time.Unix(vivo.Unix(), 0).UTC() // 05:00:38.000
+
+	antes := []model.ContainerSample{cs("caddy", comoVuelveDeLaBase)}
+	despues := []model.ContainerSample{cs("caddy", vivo)}
+
+	if ev := rules.DetectarReinicioContainers(antes, despues, ahora); ev != nil {
+		t.Errorf("los nanosegundos perdidos al persistir se leyeron como reinicio: %q", ev.Detalle)
+	}
+}
+
+// Y el control de que el arreglo no rompa la detección de verdad: un reinicio
+// real mueve StartedAt bastante más que una fracción de segundo.
+func TestUnReinicioDeVerdadSigueSiendoDetectadoTrasElArreglo(t *testing.T) {
+	viejo := time.Date(2026, 8, 22, 5, 0, 38, 932553068, time.UTC)
+	nuevo := viejo.Add(3 * time.Second)
+
+	antes := []model.ContainerSample{cs("caddy", time.Unix(viejo.Unix(), 0).UTC())}
+	despues := []model.ContainerSample{cs("caddy", nuevo)}
+
+	if ev := rules.DetectarReinicioContainers(antes, despues, ahora); ev == nil {
+		t.Error("un arranque 3 segundos después SÍ es un reinicio y no se detectó")
+	}
+}
