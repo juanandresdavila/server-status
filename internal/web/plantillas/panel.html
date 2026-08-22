@@ -53,7 +53,7 @@
 <div class="sub">
   uptime {{ printf "%.0f" .Host.Uptime.Hours }} h ·
   carga {{ printf "%.2f" .Host.Load1 }} / {{ printf "%.2f" .Host.Load5 }} / {{ printf "%.2f" .Host.Load15 }} ·
-  actualizado {{ hora .Host.TS }}
+  actualizado {{ hora .Host.TS .Zona }}
 </div>
 
 <div class="tarjetas">
@@ -125,8 +125,8 @@
     {{/* data-v: la fecha "02/01 15:04" ordenada como texto pone el día antes
          que el mes; el epoch ordena bien. Un incidente abierto sigue vigente,
          por eso su data-v es "infinito" y queda como el más reciente. */}}
-    <td data-v="{{ .AbiertoEn.Unix }}">{{ hora .AbiertoEn }}</td>
-    <td {{ if .CerradoEn }}data-v="{{ .CerradoEn.Unix }}"{{ else }}data-v="99999999999"{{ end }}>{{ if .CerradoEn }}{{ hora .CerradoEn }}{{ else }}<span class="mal">abierto</span>{{ end }}</td>
+    <td data-v="{{ .AbiertoEn.Unix }}">{{ hora .AbiertoEn $.Zona }}</td>
+    <td {{ if .CerradoEn }}data-v="{{ .CerradoEn.Unix }}"{{ else }}data-v="99999999999"{{ end }}>{{ if .CerradoEn }}{{ hora .CerradoEn $.Zona }}{{ else }}<span class="mal">abierto</span>{{ end }}</td>
     <td class="err">{{ .Detalle }}</td>
   </tr>
   {{ else }}

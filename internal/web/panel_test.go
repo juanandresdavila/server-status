@@ -11,6 +11,17 @@ import (
 	"github.com/juanandresdavila/server-status/internal/web"
 )
 
+// El VPS corre en Etc/UTC, así que time.Local ahí es UTC y el panel mostraba
+// UTC creyendo mostrar hora argentina. Los tests fijan la zona a propósito para
+// que el bug no pueda volver escondido detrás del huso de quien corra el test.
+var zonaDePrueba = func() *time.Location {
+	l, err := time.LoadLocation("America/Argentina/Buenos_Aires")
+	if err != nil {
+		panic(err)
+	}
+	return l
+}()
+
 type datosFalsos struct{}
 
 func (datosFalsos) UltimasHostSamples(int) ([]model.HostSample, error) {
@@ -79,7 +90,7 @@ func (datosFalsos) EventosEntre(desde, hasta time.Time, limite int) ([]model.Eve
 // El export baja lo mismo que muestra la vista, pero como archivo de texto
 // plano: es la forma de llevarse los logs de un container a otra herramienta.
 func TestExportDeLogsDescargaTextoPlano(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{})
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs/export?container=comm-tool&horas=6", nil))
 
@@ -104,7 +115,7 @@ func TestExportDeLogsDescargaTextoPlano(t *testing.T) {
 // Sin container el archivo se llama "todos": el filtro vacío es válido en la
 // vista y el export tiene que aceptar lo mismo que ella.
 func TestExportDeLogsSinContainer(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{})
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs/export", nil))
 
@@ -119,7 +130,7 @@ func TestExportDeLogsSinContainer(t *testing.T) {
 // La vista de logs ofrece el export: un endpoint que solo se conoce por la
 // documentación es un endpoint que no se usa.
 func TestLaVistaDeLogsOfreceElExport(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{})
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs?container=comm-tool", nil))
 
@@ -148,7 +159,7 @@ func TestTailSinContainerNoRenderiza(t *testing.T) {
 func pedir(t *testing.T, ruta string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	web.NuevoPanel(datosFalsos{}).ServeHTTP(rec, httptest.NewRequest("GET", ruta, nil))
+	web.NuevoPanel(datosFalsos{}, zonaDePrueba).ServeHTTP(rec, httptest.NewRequest("GET", ruta, nil))
 	return rec
 }
 
@@ -343,7 +354,7 @@ func TestEChartsSeSirveDesdeElBinario(t *testing.T) {
 // La vista que faltaba: el reinicio del 22/08 estaba en la base y no había
 // ninguna pantalla donde se viera.
 func TestVistaEventosMuestraElReinicio(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{})
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720", nil))
 
@@ -360,7 +371,7 @@ func TestVistaEventosMuestraElReinicio(t *testing.T) {
 
 // El filtro de severidad tiene que poder dejar afuera lo que no es urgente.
 func TestVistaEventosFiltraPorSeveridad(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{})
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
 	// Los errores de log son warning: pidiendo solo críticos no van.
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720&sev=critical", nil))
@@ -374,7 +385,7 @@ func TestVistaEventosFiltraPorSeveridad(t *testing.T) {
 }
 
 func TestNovedadesOrdenaDeLoMasNuevoALoMasViejo(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{})
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720", nil))
 
@@ -387,4 +398,77 @@ func TestNovedadesOrdenaDeLoMasNuevoALoMasViejo(t *testing.T) {
 	if reboot > logErr {
 		t.Error("el reinicio del 22/08 tiene que ir ANTES que el error del 09/08")
 	}
+}
+
+// La zona la manda la CONFIG, no time.Local: el VPS corre en Etc/UTC. Sin esto,
+// tecleando 01:50 en el campo "desde" el server buscaba las 01:50 UTC, que son
+// las 22:50 del día anterior en Argentina. Tres horas de corrimiento sobre lo
+// que uno quiso pedir, y nada que lo indicara.
+func TestElRangoSeInterpretaEnLaZonaConfigurada(t *testing.T) {
+	// A propósito NO se usa Buenos Aires acá: en la máquina de desarrollo
+	// time.Local ES Buenos Aires, así que un test con esa zona pasaría igual
+	// con el bug puesto y no mediría nada. Con Tokio (+9) las dos respuestas
+	// se separan quince horas y el test no se puede engañar.
+	tokio, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Skip("sin tzdata para Asia/Tokyo")
+	}
+
+	var visto struct{ desde, hasta time.Time }
+	h := web.NuevoPanel(espia{cb: func(d, ha time.Time) { visto.desde, visto.hasta = d, ha }}, tokio)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET",
+		"/logs?desde=2026-08-22T01:50&hasta=2026-08-22T02:10", nil))
+
+	// 01:50 del 22 en Tokio (UTC+9) son las 16:50 UTC del 21.
+	if got := visto.desde.UTC().Format("2006-01-02 15:04"); got != "2026-08-21 16:50" {
+		t.Errorf("desde = %s UTC, quería 2026-08-21 16:50 (01:50 en Tokio)", got)
+	}
+	if got := visto.hasta.UTC().Format("2006-01-02 15:04"); got != "2026-08-21 17:10" {
+		t.Errorf("hasta = %s UTC, quería 2026-08-21 17:10 (02:10 en Tokio)", got)
+	}
+}
+
+// Y lo que se muestra también va en esa zona, no en la del proceso.
+func TestLasHorasSeMuestranEnLaZonaConfigurada(t *testing.T) {
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720", nil))
+
+	// El evento falso ocurrió 05:00:31 UTC → 02:00:31 en Buenos Aires.
+	if !strings.Contains(w.Body.String(), "02:00:31") {
+		t.Error("la vista no muestra la hora en la zona configurada (esperaba 02:00:31)")
+	}
+	if strings.Contains(w.Body.String(), "05:00:31") {
+		t.Error("la vista está mostrando UTC crudo")
+	}
+}
+
+// El mismo control que el del rango, pero sobre lo que se MUESTRA: con Tokio
+// la respuesta correcta no puede coincidir con la de time.Local.
+func TestLoQueSeMuestraNoSaleDeTimeLocal(t *testing.T) {
+	tokio, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Skip("sin tzdata para Asia/Tokyo")
+	}
+	h := web.NuevoPanel(datosFalsos{}, tokio)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720", nil))
+
+	// 05:00:31 UTC → 14:00:31 en Tokio.
+	if !strings.Contains(w.Body.String(), "14:00:31") {
+		t.Error("con zona Tokio la vista tendría que mostrar 14:00:31")
+	}
+}
+
+// espia captura el rango con el que se consultó, y delega el resto en datosFalsos.
+type espia struct {
+	datosFalsos
+	cb func(desde, hasta time.Time)
+}
+
+func (e espia) BuscarLogs(texto, container, nivel string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+	e.cb(desde, hasta)
+	return e.datosFalsos.BuscarLogs(texto, container, nivel, desde, hasta, limite)
 }

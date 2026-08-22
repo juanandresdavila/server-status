@@ -195,7 +195,7 @@ func correr(cfg config.Config, col *host.Collector) error {
 	if cfg.PanelAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/api/tail", web.NuevoTail(&seguidorDocker{cli: cli}))
-		mux.Handle("/", web.NuevoPanel(s))
+		mux.Handle("/", web.NuevoPanel(s, loc))
 		go func() {
 			if err := web.Escuchar(cfg.PanelAddr, mux, 2*time.Minute); err != nil {
 				slog.Error("el panel no pudo levantar", "err", err)

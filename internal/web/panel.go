@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -27,10 +28,14 @@ type Datos interface {
 }
 
 var plantillaPanel = template.Must(template.New("panel").Funcs(template.FuncMap{
-	"pct":  pct,
-	"gib":  gib,
-	"mib":  func(b uint64) float64 { return float64(b) / (1024 * 1024) },
-	"hora": func(t time.Time) string { return t.Local().Format("02/01 15:04") },
+	"pct": pct,
+	"gib": gib,
+	"mib": func(b uint64) float64 { return float64(b) / (1024 * 1024) },
+	// Sin zona fija sería t.Local(), y el VPS corre en Etc/UTC: el panel venía
+	// mostrando UTC mientras uno lo leía como hora argentina. La zona sale de
+	// la config, que es la misma que usa el resumen diario.
+	"hora": func(t time.Time, loc *time.Location) string { return enZona(t, loc).Format("02/01 15:04") },
+	"en":   enZona,
 }).ParseFS(plantillas, "plantillas/nav.html", "plantillas/panel.html",
 	"plantillas/logs.html", "plantillas/tail.html", "plantillas/eventos.html"))
 
@@ -52,6 +57,7 @@ var rangos = []struct {
 
 type vistaPanel struct {
 	Nav        nav
+	Zona       *time.Location
 	Host       model.HostSample
 	Containers []model.ContainerSample
 	Probes     []model.ProbeResult
@@ -63,7 +69,26 @@ type vistaPanel struct {
 	}
 }
 
-func NuevoPanel(d Datos) http.Handler {
+// enZona nunca recibe nil sin defenderse: t.In(nil) PANIQUEA, y un panic adentro
+// de una plantilla deja media página escrita con un 200 arriba — un fallo que no
+// se ve. Mostrar UTC es peor que mostrar la hora bien, pero muchísimo mejor que
+// servir una página cortada por la mitad diciendo que salió todo bien.
+func enZona(t time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		return t.UTC()
+	}
+	return t.In(loc)
+}
+
+// NuevoPanel arma el panel. La zona NO puede ser time.Local: el VPS corre en
+// Etc/UTC, así que el panel mostraba UTC mientras uno lo leía como hora
+// argentina, y los campos desde/hasta interpretaban lo tecleado como UTC —
+// tres horas de corrimiento sobre lo que uno quiso pedir, sin nada que lo
+// indicara. Sale de la config, la misma zona que usa el resumen diario.
+func NuevoPanel(d Datos, zona *time.Location) http.Handler {
+	if zona == nil {
+		zona = time.UTC
+	}
 	mux := http.NewServeMux()
 
 	// ECharts sale del binario, no de un CDN: el panel vive en el tailnet y no
@@ -95,7 +120,7 @@ func NuevoPanel(d Datos) http.Handler {
 	// navegador renderizando 10 000 divs, es un archivo que se abre en otro lado.
 	mux.HandleFunc("GET /logs/export", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		v := ventanaDe(r, time.Now())
+		v := ventanaDe(r, time.Now(), zona)
 		nivel := nivelDe(r)
 
 		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"), nivel,
@@ -118,10 +143,10 @@ func NuevoPanel(d Datos) http.Handler {
 		// export salió una vez con "24h" en el nombre cubriendo 4 h 54 m, y el
 		// reinicio que se buscaba estaba en las horas que faltaban.
 		fmt.Fprintf(w, "# pedido: %s → %s (nivel mínimo %s)\n",
-			v.Desde.Local().Format(time.DateTime), v.Hasta.Local().Format(time.DateTime), nivel)
+			v.en(v.Desde).Format(time.DateTime), v.en(v.Hasta).Format(time.DateTime), nivel)
 		if len(lineas) == topeExport {
 			fmt.Fprintf(w, "# TRUNCADO en %d líneas: el archivo cubre desde %s, no desde lo pedido.\n",
-				topeExport, lineas[len(lineas)-1].TS.Local().Format(time.DateTime))
+				topeExport, v.en(lineas[len(lineas)-1].TS).Format(time.DateTime))
 			fmt.Fprintf(w, "# Achicá la ventana, filtrá por container o subí el nivel mínimo.\n")
 		}
 		fmt.Fprintf(w, "# %d líneas\n\n", len(lineas))
@@ -137,7 +162,7 @@ func NuevoPanel(d Datos) http.Handler {
 
 	mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		v := ventanaDe(r, time.Now())
+		v := ventanaDe(r, time.Now(), zona)
 		nivel := nivelDe(r)
 
 		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"), nivel,
@@ -156,8 +181,8 @@ func NuevoPanel(d Datos) http.Handler {
 				"Se alcanzó el tope de %d líneas: esto cubre desde %s, no desde %s. "+
 					"Achicá la ventana, elegí un container o subí el nivel mínimo.",
 				topeVista,
-				lineas[len(lineas)-1].TS.Local().Format(time.DateTime),
-				v.Desde.Local().Format(time.DateTime))
+				v.en(lineas[len(lineas)-1].TS).Format(time.DateTime),
+				v.en(v.Desde).Format(time.DateTime))
 		}
 
 		// La lista de containers sale del último estado, no de los logs:
@@ -170,8 +195,9 @@ func NuevoPanel(d Datos) http.Handler {
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		plantillaPanel.ExecuteTemplate(w, "logs.html", struct {
+		errPlantilla := plantillaPanel.ExecuteTemplate(w, "logs.html", struct {
 			Nav          nav
+			Zona         *time.Location
 			Q, Container string
 			Nivel        string
 			Horas        int
@@ -185,11 +211,18 @@ func NuevoPanel(d Datos) http.Handler {
 				Texto string
 			}
 		}{
-			Nav: nav{Activo: "logs", Horas: v.Horas, Container: q.Get("container")},
-			Q:   q.Get("q"), Container: q.Get("container"), Nivel: nivel,
+			Nav:  nav{Activo: "logs", Horas: v.Horas, Container: q.Get("container")},
+			Zona: zona,
+			Q:    q.Get("q"), Container: q.Get("container"), Nivel: nivel,
 			Horas: v.Horas, Ventana: v, Truncado: truncado,
 			Containers: nombres, Lineas: lineas, Niveles: niveles, Rangos: rangos,
 		})
+		if errPlantilla != nil {
+			// El cuerpo ya se empezó a escribir, así que no se puede devolver un
+			// 500: lo único que queda es dejar rastro. Sin esto, una plantilla
+			// rota se ve como una página a medias con status 200.
+			slog.Error("no se pudo renderizar los logs", "err", errPlantilla)
+		}
 	})
 
 	// /eventos es la vista que faltaba: qué pasó y cuándo, en una sola línea de
@@ -197,7 +230,7 @@ func NuevoPanel(d Datos) http.Handler {
 	// no se registraban en ningún lado y los errores de log había que ir a
 	// buscarlos a mano con el filtro puesto.
 	mux.HandleFunc("GET /eventos", func(w http.ResponseWriter, r *http.Request) {
-		v := ventanaDe(r, time.Now())
+		v := ventanaDe(r, time.Now(), zona)
 		minimo := severidadValida(r.URL.Query().Get("sev"))
 
 		incidentes, err := d.UltimosIncidentes(200)
@@ -219,8 +252,9 @@ func NuevoPanel(d Datos) http.Handler {
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		plantillaPanel.ExecuteTemplate(w, "eventos.html", struct {
+		errPlantilla := plantillaPanel.ExecuteTemplate(w, "eventos.html", struct {
 			Nav       nav
+			Zona      *time.Location
 			Ventana   Ventana
 			Horas     int
 			Sev       string
@@ -230,11 +264,14 @@ func NuevoPanel(d Datos) http.Handler {
 				Texto string
 			}
 		}{
-			Nav:     nav{Activo: "eventos", Horas: v.Horas},
+			Nav: nav{Activo: "eventos", Horas: v.Horas}, Zona: zona,
 			Ventana: v, Horas: v.Horas, Sev: minimo,
 			Novedades: armarNovedades(incidentes, eventos, errores, v.Desde, v.Hasta, minimo),
 			Rangos:    rangos,
 		})
+		if errPlantilla != nil {
+			slog.Error("no se pudo renderizar los eventos", "err", errPlantilla)
+		}
 	})
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +331,7 @@ func NuevoPanel(d Datos) http.Handler {
 	})
 
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		v := vistaPanel{Horas: horasDe(r), Rangos: rangos}
+		v := vistaPanel{Horas: horasDe(r), Rangos: rangos, Zona: zona}
 		v.Nav = nav{Activo: "panel", Horas: v.Horas}
 
 		hs, err := d.UltimasHostSamples(1)
@@ -337,17 +374,28 @@ type Ventana struct {
 	Desde, Hasta time.Time
 	Horas        int // 0 cuando el rango es explícito
 	Explicita    bool
+	Zona         *time.Location
 }
 
-// formato de un <input type="datetime-local">. Sin zona: lo manda en la hora
-// local del navegador, así que se interpreta en la local del proceso.
+// en devuelve la hora en la zona del panel. Existe para que ningún formateo de
+// esta capa vuelva a caer en time.Local por descuido: el VPS corre en Etc/UTC.
+func (v Ventana) en(t time.Time) time.Time {
+	if v.Zona == nil {
+		return t.UTC()
+	}
+	return t.In(v.Zona)
+}
+
+// formato de un <input type="datetime-local">. El navegador lo manda SIN zona,
+// con la hora que el usuario tecleó, así que se interpreta en la zona
+// configurada del panel y no en la del proceso.
 const formLocal = "2006-01-02T15:04"
 
 // DesdeHasta de los campos del form; si no vienen o no parsean, cae al ?horas=.
-func ventanaDe(r *http.Request, ahora time.Time) Ventana {
+func ventanaDe(r *http.Request, ahora time.Time, zona *time.Location) Ventana {
 	q := r.URL.Query()
-	desde, errD := time.ParseInLocation(formLocal, q.Get("desde"), time.Local)
-	hasta, errH := time.ParseInLocation(formLocal, q.Get("hasta"), time.Local)
+	desde, errD := time.ParseInLocation(formLocal, q.Get("desde"), zona)
+	hasta, errH := time.ParseInLocation(formLocal, q.Get("hasta"), zona)
 
 	switch {
 	case errD == nil && errH == nil:
@@ -358,7 +406,7 @@ func ventanaDe(r *http.Request, ahora time.Time) Ventana {
 		desde = hasta.Add(-time.Duration(horasDe(r)) * time.Hour)
 	default:
 		h := horasDe(r)
-		return Ventana{Desde: ahora.Add(-time.Duration(h) * time.Hour), Hasta: ahora, Horas: h}
+		return Ventana{Desde: ahora.Add(-time.Duration(h) * time.Hour), Hasta: ahora, Horas: h, Zona: zona}
 	}
 
 	// Al revés se corrige en vez de devolver vacío: es un error de tipeo obvio
@@ -366,7 +414,7 @@ func ventanaDe(r *http.Request, ahora time.Time) Ventana {
 	if hasta.Before(desde) {
 		desde, hasta = hasta, desde
 	}
-	return Ventana{Desde: desde, Hasta: hasta, Explicita: true}
+	return Ventana{Desde: desde, Hasta: hasta, Explicita: true, Zona: zona}
 }
 
 // Valor para rellenar el input. Vacío si el rango salió del atajo, así los
@@ -375,14 +423,14 @@ func (v Ventana) ValorDesde() string {
 	if !v.Explicita {
 		return ""
 	}
-	return v.Desde.Local().Format(formLocal)
+	return v.en(v.Desde).Format(formLocal)
 }
 
 func (v Ventana) ValorHasta() string {
 	if !v.Explicita {
 		return ""
 	}
-	return v.Hasta.Local().Format(formLocal)
+	return v.en(v.Hasta).Format(formLocal)
 }
 
 // niveles son las opciones del filtro, del que más muestra al que menos.
@@ -422,7 +470,7 @@ func nivelDe(r *http.Request) string {
 func nombreExport(container string, v Ventana) string {
 	if v.Explicita {
 		return fmt.Sprintf("logs-%s-%s_a_%s.txt", container,
-			v.Desde.Local().Format("2006-01-02T1504"), v.Hasta.Local().Format("2006-01-02T1504"))
+			v.en(v.Desde).Format("2006-01-02T1504"), v.en(v.Hasta).Format("2006-01-02T1504"))
 	}
 	return fmt.Sprintf("logs-%s-%dh.txt", container, v.Horas)
 }
