@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Container es el estado de un container en un momento dado.
@@ -14,8 +15,13 @@ type Container struct {
 	State    string // running | exited | restarting | paused | dead
 	Health   string // healthy | unhealthy | starting | none
 	Restarts int
-	CPUPct   float64
-	MemBytes uint64
+	// StartedAt es cuándo arrancó ESTA encarnación del container, y es la única
+	// señal confiable de que se reinició. Restarts no sirve: solo cuenta los
+	// reinicios por política, así que un arranque con el host lo deja igual y
+	// una recreación con compose lo resetea a cero.
+	StartedAt time.Time
+	CPUPct    float64
+	MemBytes  uint64
 }
 
 type resumenAPI struct {
@@ -54,13 +60,15 @@ func primerNombre(names []string) string {
 // como campo, solo embebido en un string tipo "Up 2 hours (healthy)" que sería
 // frágil de parsear.
 type Detalle struct {
-	Health   string
-	Restarts int
+	Health    string
+	Restarts  int
+	StartedAt time.Time
 }
 
 type inspectAPI struct {
 	RestartCount int `json:"RestartCount"`
 	State        struct {
+		StartedAt string `json:"StartedAt"`
 		// Puntero a propósito: si el container no tiene healthcheck, Docker
 		// omite el objeto entero y esto queda en nil.
 		Health *struct {
@@ -78,7 +86,14 @@ func (c *Client) Inspect(ctx context.Context, id string) (Detalle, error) {
 	if crudo.State.Health != nil && crudo.State.Health.Status != "" {
 		salud = crudo.State.Health.Status
 	}
-	return Detalle{Health: salud, Restarts: crudo.RestartCount}, nil
+	// Docker manda RFC3339 con nanosegundos, y para un container que nunca
+	// arrancó manda el cero "0001-01-01T00:00:00Z". Si no parsea se deja el
+	// cero de time.Time, que el detector lee como "no se sabe".
+	var arranco time.Time
+	if t, err := time.Parse(time.RFC3339Nano, crudo.State.StartedAt); err == nil && t.Year() > 1 {
+		arranco = t.UTC()
+	}
+	return Detalle{Health: salud, Restarts: crudo.RestartCount, StartedAt: arranco}, nil
 }
 
 // Uso es el consumo instantáneo de un container.
@@ -183,6 +198,7 @@ func (c *Client) Recolectar(ctx context.Context, limite int) ([]Container, error
 			} else {
 				cs[i].Health = d.Health
 				cs[i].Restarts = d.Restarts
+				cs[i].StartedAt = d.StartedAt
 			}
 
 			// Un container apagado no tiene stats y pedirlos da error.

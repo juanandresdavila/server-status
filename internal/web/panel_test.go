@@ -60,7 +60,7 @@ func (d datosFalsos) SerieHost(desde, hasta time.Time) ([]model.HostSample, erro
 	return out, nil
 }
 
-func (datosFalsos) BuscarLogs(texto, container string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+func (datosFalsos) BuscarLogs(texto, container, nivelMinimo string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
 	return []model.LineaLog{{
 		TS:        time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
 		Container: "comm-tool", Stream: "stderr", Linea: "ERROR conexion rechazada",

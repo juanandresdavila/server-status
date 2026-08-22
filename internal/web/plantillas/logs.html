@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>logs · server-status</title>
 <style>
-  :root { color-scheme: light dark; --borde:#8883; --err:#c0392b; }
+  :root { color-scheme: light dark; --borde:#8883; --err:#c0392b; --warn:#b7791f; }
   * { box-sizing: border-box; }
   body { font: 15px/1.5 system-ui, -apple-system, sans-serif; margin: 0; padding: 1.5rem; }
   h1 { font-size: 1.25rem; margin: 0 0 1rem; }
@@ -17,11 +17,24 @@
   pre { font: 12.5px/1.6 ui-monospace, Menlo, monospace; margin: 0;
         border: 1px solid var(--borde); border-radius: .5rem; padding: .75rem;
         overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
-  .l { display: grid; grid-template-columns: 5.5rem 11rem 1fr; gap: .75rem; }
+  .l { display: grid; grid-template-columns: 5.5rem 3.6rem 11rem 1fr; gap: .75rem; }
   .l + .l { margin-top: .2rem; }
   .t, .c { opacity: .55; }
-  .stderr .m { color: var(--err); }
   .vacio { opacity: .6; padding: 1rem 0; }
+  /* El color lo pone el NIVEL, no el stream: media plataforma escribe todo por
+     stderr y pintar eso de rojo enseñaba a ignorar el rojo. */
+  .n { font-weight: 600; font-size: .82em; letter-spacing: .03em; align-self: center; }
+  .n-TRACE { opacity: .35; }
+  .n-INFO  { opacity: .55; }
+  .n-WARN  { color: var(--warn); }
+  .n-ERROR { color: var(--err); }
+  .lv-TRACE .m { opacity: .5; }
+  .lv-WARN  .m { color: var(--warn); }
+  .lv-ERROR .m { color: var(--err); }
+  .rango { display: flex; gap: .35rem; align-items: center; }
+  .rango label { font-size: .8rem; opacity: .6; }
+  .aviso { border: 1px solid var(--warn); border-left-width: 3px; border-radius: .4rem;
+           padding: .6rem .8rem; margin-bottom: 1rem; font-size: .88rem; }
 {{ template "nav-css" }}
 </style>
 </head>
@@ -38,25 +51,41 @@
     <option value="{{ . }}" {{ if eq . $.Container }}selected{{ end }}>{{ . }}</option>
     {{ end }}
   </select>
+  <select name="nivel">
+    {{ range .Niveles }}
+    <option value="{{ .Valor }}" {{ if eq .Valor $.Nivel }}selected{{ end }}>{{ .Texto }}</option>
+    {{ end }}
+  </select>
   <select name="horas">
     {{ range .Rangos }}
     <option value="{{ .Valor }}" {{ if eq .Valor $.Horas }}selected{{ end }}>{{ .Texto }}</option>
     {{ end }}
   </select>
+  <span class="rango">
+    <label for="desde">desde</label>
+    <input type="datetime-local" id="desde" name="desde" value="{{ .Ventana.ValorDesde }}">
+    <label for="hasta">hasta</label>
+    <input type="datetime-local" id="hasta" name="hasta" value="{{ .Ventana.ValorHasta }}">
+  </span>
   <button type="submit">buscar</button>
   {{/* Mismo form, otro destino: el export baja como archivo lo que la vista
        muestra, con los mismos filtros, sin duplicar controles. */}}
   <button type="submit" formaction="/logs/export">exportar</button>
 </form>
 
+{{ if .Truncado }}<div class="aviso">{{ .Truncado }}</div>{{ end }}
+
 <div class="ayuda">
   La búsqueda es por palabra completa; con <code>*</code> al final busca por prefijo.
   Elegí un container y el tail en vivo aparece arriba.
+  Con <strong>desde/hasta</strong> cargados manda ese rango y el desplegable de horas queda ignorado;
+  dejalos vacíos para volver al atajo. <strong>TRACE</strong> es la continuación de líneas
+  multilínea y el logging de acceso: es el 79 % del volumen.
 </div>
 
 <pre>
 {{- range .Lineas }}
-<div class="l {{ .Stream }}"><span class="t">{{ .TS.Local.Format "15:04:05" }}</span><span class="c">{{ .Container }}</span><span class="m">{{ .Linea }}</span></div>
+<div class="l lv-{{ .Nivel }}"><span class="t">{{ .TS.Local.Format "15:04:05" }}</span><span class="n n-{{ .Nivel }}">{{ .Nivel }}</span><span class="c">{{ .Container }}</span><span class="m">{{ .Linea }}</span></div>
 {{- else }}
 <div class="vacio">sin resultados</div>
 {{- end }}

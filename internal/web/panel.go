@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/juanandresdavila/server-status/internal/logs"
 	"github.com/juanandresdavila/server-status/internal/model"
 )
 
@@ -16,7 +17,7 @@ import (
 // Declarada acá y no importada de store, por la misma razón que en rules:
 // deja el panel testeable sin base.
 type Datos interface {
-	BuscarLogs(texto, container string, desde, hasta time.Time, limite int) ([]model.LineaLog, error)
+	BuscarLogs(texto, container, nivelMinimo string, desde, hasta time.Time, limite int) ([]model.LineaLog, error)
 	UltimasHostSamples(n int) ([]model.HostSample, error)
 	UltimoEstadoContainers() ([]model.ContainerSample, error)
 	UltimoEstadoProbes() ([]model.ProbeResult, error)
@@ -93,11 +94,11 @@ func NuevoPanel(d Datos) http.Handler {
 	// navegador renderizando 10 000 divs, es un archivo que se abre en otro lado.
 	mux.HandleFunc("GET /logs/export", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		horas := horasDe(r)
-		hasta := time.Now()
+		v := ventanaDe(r, time.Now())
+		nivel := nivelDe(r)
 
-		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"),
-			hasta.Add(-time.Duration(horas)*time.Hour), hasta, 10000)
+		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"), nivel,
+			v.Desde, v.Hasta, topeExport)
 		if err != nil {
 			http.Error(w, "no se pudieron buscar los logs", http.StatusInternalServerError)
 			return
@@ -109,26 +110,53 @@ func NuevoPanel(d Datos) http.Handler {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Disposition",
-			fmt.Sprintf("attachment; filename=%q", fmt.Sprintf("logs-%s-%dh.txt", nombre, horas)))
+			fmt.Sprintf("attachment; filename=%q", nombreExport(nombre, v)))
+
+		// La cabecera va SIEMPRE, no solo al truncar: un archivo que no dice
+		// qué ventana cubre se lee como si cubriera la que uno pidió. Este
+		// export salió una vez con "24h" en el nombre cubriendo 4 h 54 m, y el
+		// reinicio que se buscaba estaba en las horas que faltaban.
+		fmt.Fprintf(w, "# pedido: %s → %s (nivel mínimo %s)\n",
+			v.Desde.Local().Format(time.DateTime), v.Hasta.Local().Format(time.DateTime), nivel)
+		if len(lineas) == topeExport {
+			fmt.Fprintf(w, "# TRUNCADO en %d líneas: el archivo cubre desde %s, no desde lo pedido.\n",
+				topeExport, lineas[len(lineas)-1].TS.Local().Format(time.DateTime))
+			fmt.Fprintf(w, "# Achicá la ventana, filtrá por container o subí el nivel mínimo.\n")
+		}
+		fmt.Fprintf(w, "# %d líneas\n\n", len(lineas))
+
 		// Vienen de la más nueva a la más vieja; se escriben al revés para que
 		// el archivo se lea como una terminal.
 		for i := len(lineas) - 1; i >= 0; i-- {
 			l := lineas[i]
-			fmt.Fprintf(w, "%s %s %s %s\n",
-				l.TS.UTC().Format(time.RFC3339), l.Container, l.Stream, l.Linea)
+			fmt.Fprintf(w, "%s %-5s %s %s %s\n",
+				l.TS.UTC().Format(time.RFC3339), l.Nivel, l.Container, l.Stream, l.Linea)
 		}
 	})
 
 	mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		horas := horasDe(r)
-		hasta := time.Now()
+		v := ventanaDe(r, time.Now())
+		nivel := nivelDe(r)
 
-		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"),
-			hasta.Add(-time.Duration(horas)*time.Hour), hasta, 500)
+		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"), nivel,
+			v.Desde, v.Hasta, topeVista)
 		if err != nil {
 			http.Error(w, "no se pudieron buscar los logs", http.StatusInternalServerError)
 			return
+		}
+
+		// Truncar en silencio es lo que hizo que una consulta de 24 h se leyera
+		// como 24 h cubriendo 5. Si se llegó al tope hay que decirlo, y decir
+		// hasta dónde llega de verdad lo que se está mostrando.
+		truncado := ""
+		if len(lineas) == topeVista {
+			truncado = fmt.Sprintf(
+				"Se alcanzó el tope de %d líneas: esto cubre desde %s, no desde %s. "+
+					"Achicá la ventana, elegí un container o subí el nivel mínimo.",
+				topeVista,
+				lineas[len(lineas)-1].TS.Local().Format(time.DateTime),
+				v.Desde.Local().Format(time.DateTime))
 		}
 
 		// La lista de containers sale del último estado, no de los logs:
@@ -144,17 +172,22 @@ func NuevoPanel(d Datos) http.Handler {
 		plantillaPanel.ExecuteTemplate(w, "logs.html", struct {
 			Nav          nav
 			Q, Container string
+			Nivel        string
 			Horas        int
+			Ventana      Ventana
+			Truncado     string
 			Containers   []string
 			Lineas       []model.LineaLog
+			Niveles      []struct{ Valor, Texto string }
 			Rangos       []struct {
 				Valor int
 				Texto string
 			}
 		}{
-			Nav: nav{Activo: "logs", Horas: horas, Container: q.Get("container")},
-			Q:   q.Get("q"), Container: q.Get("container"), Horas: horas,
-			Containers: nombres, Lineas: lineas, Rangos: rangos,
+			Nav: nav{Activo: "logs", Horas: v.Horas, Container: q.Get("container")},
+			Q:   q.Get("q"), Container: q.Get("container"), Nivel: nivel,
+			Horas: v.Horas, Ventana: v, Truncado: truncado,
+			Containers: nombres, Lineas: lineas, Niveles: niveles, Rangos: rangos,
 		})
 	})
 
@@ -249,6 +282,71 @@ func NuevoPanel(d Datos) http.Handler {
 	return mux
 }
 
+// Ventana es el rango de tiempo pedido, ya resuelto.
+//
+// desde/hasta explícitos le ganan al ?horas=, que queda como atajo. Antes solo
+// existía el atajo, anclado siempre a time.Now(): no había forma de mirar una
+// franja del pasado, que es justo lo que hace falta cuando algo ya pasó.
+type Ventana struct {
+	Desde, Hasta time.Time
+	Horas        int // 0 cuando el rango es explícito
+	Explicita    bool
+}
+
+// formato de un <input type="datetime-local">. Sin zona: lo manda en la hora
+// local del navegador, así que se interpreta en la local del proceso.
+const formLocal = "2006-01-02T15:04"
+
+// DesdeHasta de los campos del form; si no vienen o no parsean, cae al ?horas=.
+func ventanaDe(r *http.Request, ahora time.Time) Ventana {
+	q := r.URL.Query()
+	desde, errD := time.ParseInLocation(formLocal, q.Get("desde"), time.Local)
+	hasta, errH := time.ParseInLocation(formLocal, q.Get("hasta"), time.Local)
+
+	switch {
+	case errD == nil && errH == nil:
+	case errD == nil && errH != nil:
+		hasta = ahora // "desde tal hora hasta ahora"
+	case errD != nil && errH == nil:
+		// Solo un final: se toman las horas del atajo hacia atrás desde ahí.
+		desde = hasta.Add(-time.Duration(horasDe(r)) * time.Hour)
+	default:
+		h := horasDe(r)
+		return Ventana{Desde: ahora.Add(-time.Duration(h) * time.Hour), Hasta: ahora, Horas: h}
+	}
+
+	// Al revés se corrige en vez de devolver vacío: es un error de tipeo obvio
+	// y mostrar "sin resultados" no ayuda a nadie a darse cuenta.
+	if hasta.Before(desde) {
+		desde, hasta = hasta, desde
+	}
+	return Ventana{Desde: desde, Hasta: hasta, Explicita: true}
+}
+
+// Valor para rellenar el input. Vacío si el rango salió del atajo, así los
+// campos quedan libres y se ve que manda el <select>.
+func (v Ventana) ValorDesde() string {
+	if !v.Explicita {
+		return ""
+	}
+	return v.Desde.Local().Format(formLocal)
+}
+
+func (v Ventana) ValorHasta() string {
+	if !v.Explicita {
+		return ""
+	}
+	return v.Hasta.Local().Format(formLocal)
+}
+
+// niveles son las opciones del filtro, del que más muestra al que menos.
+var niveles = []struct{ Valor, Texto string }{
+	{"TRACE", "todo (con TRACE)"},
+	{"INFO", "info y peor"},
+	{"WARN", "solo warnings y errores"},
+	{"ERROR", "solo errores"},
+}
+
 // horasDe acota el rango. El parámetro es entrada de afuera aunque el panel
 // sea privado: cualquier basura cae al default en vez de romper.
 func horasDe(r *http.Request) int {
@@ -257,6 +355,30 @@ func horasDe(r *http.Request) int {
 		return 24
 	}
 	return n
+}
+
+// Los topes son distintos a propósito: la vista los renderiza como divs en un
+// navegador y el export es un archivo que se abre en otro lado.
+const (
+	topeVista  = 500
+	topeExport = 10000
+)
+
+// nivelDe lee el filtro de nivel. Cualquier basura cae a INFO, que es el
+// default de la vista: es el que hace desaparecer el ruido sin esconder nada
+// que importe.
+func nivelDe(r *http.Request) string {
+	return string(logs.NivelValido(r.URL.Query().Get("nivel")))
+}
+
+// nombreExport arma un nombre que dice qué ventana cubre. El viejo decía
+// "logs-todos-24h.txt" sobre un archivo de 5 horas.
+func nombreExport(container string, v Ventana) string {
+	if v.Explicita {
+		return fmt.Sprintf("logs-%s-%s_a_%s.txt", container,
+			v.Desde.Local().Format("2006-01-02T1504"), v.Hasta.Local().Format("2006-01-02T1504"))
+	}
+	return fmt.Sprintf("logs-%s-%dh.txt", container, v.Horas)
 }
 
 func pct(usado, total uint64) float64 {
