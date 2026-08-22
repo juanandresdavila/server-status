@@ -106,6 +106,53 @@ var migraciones = []string{
 		id    INTEGER PRIMARY KEY CHECK (id = 1),
 		hasta INTEGER NOT NULL
 	) STRICT;`,
+
+	// eventos son HECHOS PUNTUALES: un reinicio no se "cierra". Por eso no
+	// tienen cerrado_en y no chocan con incidentes_abierto_unico, que es lo que
+	// pasaría si se los modelara como incidentes que abren y cierran al toque.
+	//
+	// Existen porque el motor de reglas solo sabe de estados sostenidos —tres
+	// muestras malas seguidas, o un umbral aguantado diez minutos— y un reinicio
+	// dura segundos. El del 22/08/2026 duró 18 y no lo vio nadie.
+	`CREATE TABLE eventos (
+		id          INTEGER PRIMARY KEY,
+		tipo        TEXT    NOT NULL,
+		sujeto      TEXT    NOT NULL,
+		severidad   TEXT    NOT NULL,
+		ocurrido_en INTEGER NOT NULL,
+		detalle     TEXT    NOT NULL
+	) STRICT;
+
+	CREATE INDEX eventos_por_fecha ON eventos(ocurrido_en);`,
+
+	// El nivel va en una tabla LATERAL y no como columna de logs porque logs es
+	// FTS5: agregarle una columna obliga a recrear la tabla y reindexar el texto
+	// de 802 200 filas (191 MB) con el proceso bloqueado en Open. Y de paso
+	// corresponde: el nivel es un filtro, no texto buscable.
+	//
+	// backfill_niveles guarda el techo —lo que ya existía al migrar— y por dónde
+	// va la pasada. Con un techo fijo la pasada es O(n) y resumible: sin él
+	// habría que preguntar en cada lote qué filas faltan, y eso vuelve a
+	// escanear desde el principio cada vez.
+	`CREATE TABLE log_niveles (
+		rowid INTEGER PRIMARY KEY,
+		nivel TEXT NOT NULL
+	) STRICT;
+
+	CREATE TABLE backfill_niveles (
+		id          INTEGER PRIMARY KEY CHECK (id = 1),
+		hasta_rowid INTEGER NOT NULL,
+		ultimo      INTEGER NOT NULL
+	) STRICT;
+
+	INSERT INTO backfill_niveles (id, hasta_rowid, ultimo)
+	SELECT 1, COALESCE(MAX(rowid), 0), 0 FROM logs;`,
+
+	// RestartCount NO sirve para saber si un container se reinició: verificado
+	// en el VPS después del reboot del 22/08, los 21 containers arrancaron a las
+	// 05:00:38 y quedaron en restarts=0. Un arranque con el host no lo
+	// incrementa y una recreación lo resetea. StartedAt sí se mueve siempre.
+	`ALTER TABLE container_samples ADD COLUMN started_at INTEGER NOT NULL DEFAULT 0;`,
 }
 
 type Store struct{ db *sql.DB }
@@ -279,20 +326,27 @@ func (s *Store) InsertContainerSamples(ms []model.ContainerSample) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO container_samples (ts, name, state, health, restarts, cpu_pct, mem_bytes)
-		VALUES (?,?,?,?,?,?,?)
+		INSERT INTO container_samples (ts, name, state, health, restarts, cpu_pct, mem_bytes, started_at)
+		VALUES (?,?,?,?,?,?,?,?)
 		ON CONFLICT(ts, name) DO UPDATE SET
 			state=excluded.state, health=excluded.health, restarts=excluded.restarts,
-			cpu_pct=excluded.cpu_pct, mem_bytes=excluded.mem_bytes`)
+			cpu_pct=excluded.cpu_pct, mem_bytes=excluded.mem_bytes,
+			started_at=excluded.started_at`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, m := range ms {
+		// StartedAt cero se guarda como 0 y no como el unix de 1970: es la
+		// marca de "no se sabe", y el detector de reinicios la ignora.
+		var arranco int64
+		if !m.StartedAt.IsZero() {
+			arranco = m.StartedAt.Unix()
+		}
 		if _, err := stmt.Exec(
 			m.TS.Truncate(time.Minute).Unix(), m.Name, m.State, m.Health,
-			m.Restarts, m.CPUPct, int64(m.MemBytes),
+			m.Restarts, m.CPUPct, int64(m.MemBytes), arranco,
 		); err != nil {
 			return fmt.Errorf("insertar %s: %w", m.Name, err)
 		}
@@ -303,7 +357,7 @@ func (s *Store) InsertContainerSamples(ms []model.ContainerSample) error {
 // UltimoEstadoContainers devuelve la foto del minuto más reciente.
 func (s *Store) UltimoEstadoContainers() ([]model.ContainerSample, error) {
 	filas, err := s.db.Query(`
-		SELECT ts, name, state, health, restarts, cpu_pct, mem_bytes
+		SELECT ts, name, state, health, restarts, cpu_pct, mem_bytes, started_at
 		FROM container_samples
 		WHERE ts = (SELECT MAX(ts) FROM container_samples)
 		ORDER BY name`)
@@ -315,15 +369,22 @@ func (s *Store) UltimoEstadoContainers() ([]model.ContainerSample, error) {
 	var out []model.ContainerSample
 	for filas.Next() {
 		var (
-			c   model.ContainerSample
-			ts  int64
-			mem int64
+			c       model.ContainerSample
+			ts      int64
+			mem     int64
+			arranco int64
 		)
-		if err := filas.Scan(&ts, &c.Name, &c.State, &c.Health, &c.Restarts, &c.CPUPct, &mem); err != nil {
+		if err := filas.Scan(&ts, &c.Name, &c.State, &c.Health, &c.Restarts, &c.CPUPct, &mem, &arranco); err != nil {
 			return nil, err
 		}
 		c.TS = time.Unix(ts, 0).UTC()
 		c.MemBytes = uint64(mem)
+		// started_at en 0 es "no se sabe": las filas anteriores a la migración
+		// 10 no lo tienen. Se deja el cero de time.Time para que el detector
+		// las ignore en vez de leerlas como un arranque en 1970.
+		if arranco > 0 {
+			c.StartedAt = time.Unix(arranco, 0).UTC()
+		}
 		out = append(out, c)
 	}
 	return out, filas.Err()
@@ -605,33 +666,84 @@ func (s *Store) InsertLogs(ls []model.LineaLog) error {
 	}
 	defer stmt.Close()
 
+	// El nivel va en su tabla lateral, atado por el rowid que acaba de asignar
+	// el FTS5. Las dos escrituras van en la MISMA transacción: una línea sin
+	// su nivel quedaría invisible con cualquier filtro que no sea TRACE.
+	stmtNivel, err := tx.Prepare(`INSERT INTO log_niveles (rowid, nivel) VALUES (?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmtNivel.Close()
+
 	for _, l := range ls {
-		if _, err := stmt.Exec(l.Linea, l.Container, l.Stream, l.TS.Unix()); err != nil {
+		res, err := stmt.Exec(l.Linea, l.Container, l.Stream, l.TS.Unix())
+		if err != nil {
 			return fmt.Errorf("insertar log de %s: %w", l.Container, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("rowid del log de %s: %w", l.Container, err)
+		}
+		nivel := l.Nivel
+		if nivel == "" {
+			nivel = "INFO"
+		}
+		if _, err := stmtNivel.Exec(id, nivel); err != nil {
+			return fmt.Errorf("insertar nivel de %s: %w", l.Container, err)
 		}
 	}
 	return tx.Commit()
 }
 
+// nivelesDesde arma el conjunto de niveles que pasan un mínimo dado.
+//
+// Se filtra por IN y no por una comparación de orden porque en SQL el nivel es
+// texto: 'ERROR' < 'INFO' alfabéticamente, que es exactamente al revés de lo
+// que hace falta.
+func nivelesDesde(minimo string) []any {
+	orden := []string{"TRACE", "INFO", "WARN", "ERROR"}
+	desde := 1 // INFO es el default de la vista
+	for i, n := range orden {
+		if n == strings.ToUpper(strings.TrimSpace(minimo)) {
+			desde = i
+			break
+		}
+	}
+	out := make([]any, 0, len(orden)-desde)
+	for _, n := range orden[desde:] {
+		out = append(out, n)
+	}
+	return out
+}
+
 // BuscarLogs devuelve las líneas más nuevas primero. Con texto vacío no usa
 // MATCH: devuelve las últimas, que es lo que muestra el panel al entrar.
-func (s *Store) BuscarLogs(texto, container string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
-	q := `SELECT linea, container, stream, ts FROM logs WHERE ts <= ?`
+func (s *Store) BuscarLogs(texto, container, nivelMinimo string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+	// COALESCE porque una fila insertada antes de la migración 9 todavía puede
+	// no tener nivel si el backfill no llegó: se la trata como INFO en vez de
+	// hacerla desaparecer.
+	q := `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO')
+	      FROM logs l LEFT JOIN log_niveles n ON n.rowid = l.rowid
+	      WHERE l.ts <= ?`
 	args := []any{hasta.Unix()}
 
 	if !desde.IsZero() {
-		q += ` AND ts >= ?`
+		q += ` AND l.ts >= ?`
 		args = append(args, desde.Unix())
 	}
 	if container != "" {
-		q += ` AND container = ?`
+		q += ` AND l.container = ?`
 		args = append(args, container)
+	}
+	if niveles := nivelesDesde(nivelMinimo); len(niveles) < 4 {
+		q += ` AND COALESCE(n.nivel, 'INFO') IN (?` + strings.Repeat(",?", len(niveles)-1) + `)`
+		args = append(args, niveles...)
 	}
 	if strings.TrimSpace(texto) != "" {
 		q += ` AND logs MATCH ?`
 		args = append(args, escaparMatch(texto))
 	}
-	q += ` ORDER BY ts DESC LIMIT ?`
+	q += ` ORDER BY l.ts DESC LIMIT ?`
 	args = append(args, limite)
 
 	filas, err := s.db.Query(q, args...)
@@ -644,7 +756,7 @@ func (s *Store) BuscarLogs(texto, container string, desde, hasta time.Time, limi
 	for filas.Next() {
 		var l model.LineaLog
 		var ts int64
-		if err := filas.Scan(&l.Linea, &l.Container, &l.Stream, &ts); err != nil {
+		if err := filas.Scan(&l.Linea, &l.Container, &l.Stream, &ts, &l.Nivel); err != nil {
 			return nil, err
 		}
 		l.TS = time.Unix(ts, 0).UTC()
@@ -689,8 +801,103 @@ func (s *Store) GuardarCursorDeLog(container string, ts time.Time) error {
 }
 
 func (s *Store) BorrarLogsAnterioresA(corte time.Time) error {
-	_, err := s.db.Exec(`DELETE FROM logs WHERE ts < ?`, corte.Unix())
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Los niveles se podan PRIMERO y por join: después del DELETE de logs sus
+	// rowids ya no existen y no habría forma de saber cuáles quedaron sueltos.
+	// Sin esto log_niveles crece para siempre.
+	if _, err := tx.Exec(`
+		DELETE FROM log_niveles WHERE rowid IN (
+			SELECT rowid FROM logs WHERE ts < ?
+		)`, corte.Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM logs WHERE ts < ?`, corte.Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// BackfillNiveles clasifica un lote de las líneas que ya estaban guardadas
+// cuando se aplicó la migración 9. Devuelve cuántas procesó y si ya terminó.
+//
+// El clasificador entra por parámetro y no por import para que el store no
+// dependa de internal/logs — la misma razón por la que rules declara su propia
+// interfaz Store. Y así el backfill se testea con una función de tres líneas.
+//
+// Va por lotes y guarda por dónde iba: son 802 200 filas en la base del VPS y
+// hacerlo de una dejaría el arranque bloqueado varios minutos.
+func (s *Store) BackfillNiveles(clasificar func(linea, stream string) string, lote int) (int, bool, error) {
+	var techo, ultimo int64
+	err := s.db.QueryRow(`SELECT hasta_rowid, ultimo FROM backfill_niveles WHERE id = 1`).Scan(&techo, &ultimo)
+	if err != nil {
+		return 0, false, err
+	}
+	if ultimo >= techo {
+		return 0, true, nil
+	}
+
+	filas, err := s.db.Query(`
+		SELECT rowid, linea, stream FROM logs
+		WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`, ultimo, techo, lote)
+	if err != nil {
+		return 0, false, err
+	}
+	type fila struct {
+		rowid         int64
+		linea, stream string
+	}
+	var fs []fila
+	for filas.Next() {
+		var f fila
+		if err := filas.Scan(&f.rowid, &f.linea, &f.stream); err != nil {
+			filas.Close()
+			return 0, false, err
+		}
+		fs = append(fs, f)
+	}
+	filas.Close()
+	if err := filas.Err(); err != nil {
+		return 0, false, err
+	}
+
+	// Sin filas pero con techo por delante: son rowids que se borraron por
+	// retención. Se salta hasta el techo, si no la pasada no termina nunca.
+	if len(fs) == 0 {
+		_, err := s.db.Exec(`UPDATE backfill_niveles SET ultimo = ? WHERE id = 1`, techo)
+		return 0, true, err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT INTO log_niveles (rowid, nivel) VALUES (?,?)
+		ON CONFLICT(rowid) DO UPDATE SET nivel = excluded.nivel`)
+	if err != nil {
+		return 0, false, err
+	}
+	defer stmt.Close()
+
+	for _, f := range fs {
+		if _, err := stmt.Exec(f.rowid, clasificar(f.linea, f.stream)); err != nil {
+			return 0, false, err
+		}
+	}
+	fin := fs[len(fs)-1].rowid
+	if _, err := tx.Exec(`UPDATE backfill_niveles SET ultimo = ? WHERE id = 1`, fin); err != nil {
+		return 0, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, err
+	}
+	return len(fs), fin >= techo, nil
 }
 
 // MarcarComandoProcesado devuelve false si ese delivery ya se había procesado.

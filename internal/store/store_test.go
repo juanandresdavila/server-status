@@ -69,8 +69,8 @@ func TestUltimaMigracionAplicada(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 7 {
-		t.Errorf("versión = %d, quería 7", v)
+	if v != 10 {
+		t.Errorf("versión = %d, quería 10", v)
 	}
 }
 
@@ -599,7 +599,7 @@ func TestInsertLogsYBusquedaPorTexto(t *testing.T) {
 		t.Fatalf("InsertLogs: %v", err)
 	}
 
-	got, err := s.BuscarLogs("ERROR", "", time.Time{}, base.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("ERROR", "", "TRACE", time.Time{}, base.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatalf("BuscarLogs: %v", err)
 	}
@@ -616,7 +616,7 @@ func TestBusquedaPorPrefijo(t *testing.T) {
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	s.InsertLogs(lineas(base, "x", "conexion rechazada"))
 
-	got, err := s.BuscarLogs("conex*", "", time.Time{}, base.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("conex*", "", "TRACE", time.Time{}, base.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +631,7 @@ func TestBusquedaFiltraPorContainer(t *testing.T) {
 	s.InsertLogs(lineas(base, "uno", "mismo texto"))
 	s.InsertLogs(lineas(base, "dos", "mismo texto"))
 
-	got, err := s.BuscarLogs("texto", "uno", time.Time{}, base.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("texto", "uno", "TRACE", time.Time{}, base.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +648,7 @@ func TestBuscarConTextoRaroNoExplota(t *testing.T) {
 	s.InsertLogs(lineas(base, "x", "algo"))
 
 	for _, raro := range []string{"(", `"`, "AND", "*", "a OR", "^%$#", "NEAR(", ")"} {
-		if _, err := s.BuscarLogs(raro, "", time.Time{}, base.Add(time.Hour), 50); err != nil {
+		if _, err := s.BuscarLogs(raro, "", "TRACE", time.Time{}, base.Add(time.Hour), 50); err != nil {
 			t.Errorf("BuscarLogs(%q) devolvió error: %v", raro, err)
 		}
 	}
@@ -660,7 +660,7 @@ func TestSinTextoDevuelveLasUltimas(t *testing.T) {
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	s.InsertLogs(lineas(base, "x", "una", "dos", "tres"))
 
-	got, err := s.BuscarLogs("", "", time.Time{}, base.Add(time.Hour), 2)
+	got, err := s.BuscarLogs("", "", "TRACE", time.Time{}, base.Add(time.Hour), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +708,7 @@ func TestRetencionBorraLoViejoYDejaLoNuevo(t *testing.T) {
 		t.Fatalf("BorrarLogsAnterioresA: %v", err)
 	}
 
-	got, err := s.BuscarLogs("", "", time.Time{}, ahora.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("", "", "TRACE", time.Time{}, ahora.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,7 +814,7 @@ func TestVacuumIntoDejaUnaCopiaLegibleYCompleta(t *testing.T) {
 	if len(got) != 20 {
 		t.Errorf("la copia tiene %d muestras, el original tenía 20", len(got))
 	}
-	ls, err := copia.BuscarLogs("prueba", "", time.Time{}, base.Add(time.Hour), 10)
+	ls, err := copia.BuscarLogs("prueba", "", "TRACE", time.Time{}, base.Add(time.Hour), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -834,5 +834,163 @@ func TestVacuumIntoPisaLaCopiaAnterior(t *testing.T) {
 		if err := s.VacuumInto(destino); err != nil {
 			t.Fatalf("VacuumInto en la vuelta %d: %v", i+1, err)
 		}
+	}
+}
+
+// conNivel arma líneas con nivel explícito, que es lo que hace la ingesta real.
+func conNivel(base time.Time, cont string, pares ...string) []model.LineaLog {
+	var out []model.LineaLog
+	for i := 0; i+1 < len(pares); i += 2 {
+		out = append(out, model.LineaLog{
+			TS: base.Add(time.Duration(i) * time.Second), Container: cont,
+			Stream: "stdout", Linea: pares[i], Nivel: pares[i+1],
+		})
+	}
+	return out
+}
+
+func TestBuscarLogsFiltraPorNivelMinimo(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+
+	if err := s.InsertLogs(conNivel(base, "x",
+		"continuacion de sql", "TRACE",
+		"peticion ok", "INFO",
+		"algo raro", "WARN",
+		"se cayo", "ERROR")); err != nil {
+		t.Fatalf("InsertLogs: %v", err)
+	}
+
+	casos := []struct {
+		minimo string
+		quiero int
+	}{
+		{"TRACE", 4},
+		{"INFO", 3},
+		{"WARN", 2},
+		{"ERROR", 1},
+	}
+	for _, c := range casos {
+		got, err := s.BuscarLogs("", "", c.minimo, time.Time{}, base.Add(time.Hour), 50)
+		if err != nil {
+			t.Fatalf("BuscarLogs(%s): %v", c.minimo, err)
+		}
+		if len(got) != c.quiero {
+			t.Errorf("mínimo %s: %d líneas, quería %d", c.minimo, len(got), c.quiero)
+		}
+	}
+}
+
+func TestBuscarLogsDevuelveElNivel(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	s.InsertLogs(conNivel(base, "x", "se cayo", "ERROR"))
+
+	got, err := s.BuscarLogs("", "", "TRACE", time.Time{}, base.Add(time.Hour), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Nivel != "ERROR" {
+		t.Errorf("got = %+v, quería una línea con nivel ERROR", got)
+	}
+}
+
+// Una línea sin nivel —las que la ingesta vieja ya había guardado— no puede
+// desaparecer del panel: se la trata como INFO.
+func TestLineaSinNivelCuentaComoInfo(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	s.InsertLogs(lineas(base, "x", "sin nivel"))
+
+	got, err := s.BuscarLogs("", "", "INFO", time.Time{}, base.Add(time.Hour), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Nivel != "INFO" {
+		t.Errorf("got = %+v, quería la línea con nivel INFO", got)
+	}
+}
+
+// Sin esto log_niveles crece para siempre: la retención borra de logs y los
+// niveles de esas filas quedan sueltos, apuntando a rowids que ya no existen.
+func TestRetencionTambienPodaLosNiveles(t *testing.T) {
+	s := abrir(t)
+	ahora := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	s.InsertLogs(conNivel(ahora.AddDate(0, 0, -40), "x", "vieja", "ERROR"))
+	s.InsertLogs(conNivel(ahora, "x", "nueva", "ERROR"))
+
+	if err := s.BorrarLogsAnterioresA(ahora.AddDate(0, 0, -30)); err != nil {
+		t.Fatalf("BorrarLogsAnterioresA: %v", err)
+	}
+
+	n, err := s.ContarNiveles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("quedaron %d niveles, quería 1: la poda dejó huérfanos", n)
+	}
+}
+
+func TestBackfillClasificaLasFilasViejas(t *testing.T) {
+	ruta := filepath.Join(t.TempDir(), "test.db")
+	s, err := store.Open(ruta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	// Se insertan SIN nivel para simular lo que ya estaba guardado, y después
+	// se fuerza el techo del backfill a incluirlas.
+	if err := s.InsertLogs(lineas(base, "x", "una", "dos", "tres", "cuatro", "cinco")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReiniciarBackfillParaTest(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Un clasificador de tres líneas: es justo lo que el parámetro hace posible.
+	clasificar := func(linea, stream string) string {
+		if linea == "tres" {
+			return "ERROR"
+		}
+		return "TRACE"
+	}
+
+	total, listo := 0, false
+	for i := 0; i < 10 && !listo; i++ {
+		n, fin, err := s.BackfillNiveles(clasificar, 2)
+		if err != nil {
+			t.Fatalf("BackfillNiveles: %v", err)
+		}
+		total += n
+		listo = fin
+	}
+	if !listo {
+		t.Fatal("el backfill no terminó en 10 vueltas")
+	}
+	if total != 5 {
+		t.Errorf("procesó %d filas, quería 5", total)
+	}
+
+	got, err := s.BuscarLogs("", "", "ERROR", time.Time{}, base.Add(time.Hour), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Linea != "tres" {
+		t.Errorf("got = %+v, quería solo la línea 'tres' como ERROR", got)
+	}
+	s.Close()
+}
+
+// Un backfill que ya terminó no vuelve a trabajar: si no, cada arranque
+// reprocesaría las 802 200 filas de la base del VPS.
+func TestBackfillNoRepiteCuandoYaTermino(t *testing.T) {
+	s := abrir(t)
+	n, listo, err := s.BackfillNiveles(func(l, st string) string { return "INFO" }, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || !listo {
+		t.Errorf("n=%d listo=%v, quería 0 y true sobre una base vacía", n, listo)
 	}
 }

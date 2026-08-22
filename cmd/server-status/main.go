@@ -16,6 +16,7 @@ import (
 	"github.com/juanandresdavila/server-status/internal/collector/docker"
 	"github.com/juanandresdavila/server-status/internal/collector/host"
 	"github.com/juanandresdavila/server-status/internal/config"
+	"github.com/juanandresdavila/server-status/internal/logs"
 	"github.com/juanandresdavila/server-status/internal/model"
 	"github.com/juanandresdavila/server-status/internal/notify"
 	"github.com/juanandresdavila/server-status/internal/notify/commtool"
@@ -214,6 +215,11 @@ func correr(cfg config.Config, col *host.Collector) error {
 		}
 	}
 
+	// Las líneas que ya estaban guardadas cuando se aplicó la migración 9 no
+	// tienen nivel, y sin nivel el filtro por defecto las esconde. La pasada
+	// las clasifica en segundo plano.
+	go backfillDeNiveles(ctx, s)
+
 	wd := watchdog.New(cfg.URLPublica, os.Getenv("HEALTHCHECKS_PING_URL"), clock.Real{}, 3*time.Minute)
 	if !wd.Configurado() {
 		slog.Warn("watchdog apagado: falta HEALTHCHECKS_PING_URL")
@@ -277,7 +283,8 @@ func correr(cfg config.Config, col *host.Collector) error {
 			for _, c := range cs {
 				ms = append(ms, model.ContainerSample{
 					TS: m.TS, Name: c.Name, State: c.State, Health: c.Health,
-					Restarts: c.Restarts, CPUPct: c.CPUPct, MemBytes: c.MemBytes,
+					Restarts: c.Restarts, StartedAt: c.StartedAt,
+					CPUPct: c.CPUPct, MemBytes: c.MemBytes,
 				})
 			}
 			if err := s.InsertContainerSamples(ms); err != nil {
@@ -406,6 +413,45 @@ func correr(cfg config.Config, col *host.Collector) error {
 					slog.Error("no se pudo mandar el resumen diario", "err", err)
 				}
 			}
+		}
+	}
+}
+
+// backfillDeNiveles clasifica en segundo plano lo que ya estaba guardado.
+//
+// Va en lotes chicos y con pausa por una razón concreta: el store abre UNA sola
+// conexión a SQLite, así que cada lote le saca la base al ciclo del minuto
+// mientras dura. En el VPS son 802 200 filas; a este ritmo tarda unos minutos y
+// no se nota, y hacerlo de una dejaría el arranque bloqueado.
+//
+// Si el proceso se muere a la mitad no pasa nada: el progreso está persistido y
+// la pasada sigue donde iba en el arranque siguiente.
+func backfillDeNiveles(ctx context.Context, s *store.Store) {
+	const lote = 2000
+
+	clasificar := func(linea, stream string) string {
+		return string(logs.Clasificar(linea, stream))
+	}
+
+	var total int
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+
+		n, listo, err := s.BackfillNiveles(clasificar, lote)
+		if err != nil {
+			slog.Error("no se pudo clasificar el lote de logs viejos", "err", err)
+			return
+		}
+		total += n
+		if listo {
+			if total > 0 {
+				slog.Info("logs viejos clasificados por nivel", "lineas", total)
+			}
+			return
 		}
 	}
 }
@@ -561,6 +607,7 @@ func nuevasLineas(crudas []docker.LineaLog, desde time.Time, container string) (
 		}
 		out = append(out, model.LineaLog{
 			TS: l.TS, Container: container, Stream: l.Stream, Linea: l.Linea,
+			Nivel: string(logs.Clasificar(l.Linea, l.Stream)),
 		})
 		if l.TS.After(ultima) {
 			ultima = l.TS

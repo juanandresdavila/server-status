@@ -63,20 +63,41 @@ type ProbeResult struct {
 }
 
 // ContainerSample es el estado de un container en un minuto dado.
+//
+// StartedAt es CUÁNDO arrancó este container, y es la señal buena para saber
+// que se reinició: Restarts no sirve —un arranque con el host no lo incrementa
+// y una recreación lo resetea— pero StartedAt se mueve siempre.
 type ContainerSample struct {
-	TS       time.Time
-	Name     string
-	State    string
-	Health   string
-	Restarts int
-	CPUPct   float64
-	MemBytes uint64
+	TS        time.Time
+	Name      string
+	State     string
+	Health    string
+	Restarts  int
+	StartedAt time.Time
+	CPUPct    float64
+	MemBytes  uint64
 }
 
 // LineaLog es una línea de log ya fechada y atribuida a su container.
+//
+// Nivel es un string y no un tipo propio porque este paquete no importa nada
+// del proyecto: quien clasifica es internal/logs, que sí tiene el tipo Nivel.
 type LineaLog struct {
 	TS        time.Time
 	Container string
 	Stream    string // stdout | stderr
 	Linea     string
+	Nivel     string // TRACE | INFO | WARN | ERROR
+}
+
+// Evento es un hecho puntual: el host se reinició, unos containers volvieron.
+// A diferencia de un Incidente no tiene ventana —no se "cierra"— y por eso
+// vive en su propia tabla y no choca con incidentes_abierto_unico.
+type Evento struct {
+	ID         int64
+	Tipo       string // reboot | container_restart | monitor_start
+	Sujeto     string
+	Severidad  string // critical | warning | info
+	OcurridoEn time.Time
+	Detalle    string
 }
