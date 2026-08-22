@@ -85,7 +85,7 @@
 
 <pre>
 {{- range .Lineas }}
-<div class="l lv-{{ .Nivel }}"><span class="t">{{ .TS.Local.Format "15:04:05" }}</span><span class="n n-{{ .Nivel }}">{{ .Nivel }}</span><span class="c">{{ .Container }}</span><span class="m">{{ .Linea }}</span></div>
+<div class="l lv-{{ .Nivel }}"><span class="t">{{ (en .TS $.Zona).Format "15:04:05" }}</span><span class="n n-{{ .Nivel }}">{{ .Nivel }}</span><span class="c">{{ .Container }}</span><span class="m">{{ .Linea }}</span></div>
 {{- else }}
 <div class="vacio">sin resultados</div>
 {{- end }}
