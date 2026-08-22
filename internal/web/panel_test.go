@@ -64,6 +64,15 @@ func (datosFalsos) BuscarLogs(texto, container, nivelMinimo string, desde, hasta
 	return []model.LineaLog{{
 		TS:        time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
 		Container: "comm-tool", Stream: "stderr", Linea: "ERROR conexion rechazada",
+		Nivel: "ERROR",
+	}}, nil
+}
+
+func (datosFalsos) EventosEntre(desde, hasta time.Time, limite int) ([]model.Evento, error) {
+	return []model.Evento{{
+		ID: 1, Tipo: "reboot", Sujeto: "host", Severidad: "critical",
+		OcurridoEn: time.Date(2026, 8, 22, 5, 0, 31, 0, time.UTC),
+		Detalle:    "la máquina se reinició: arrancó 22/08 02:00:31, sin datos durante 1m20s",
 	}}, nil
 }
 
@@ -328,5 +337,54 @@ func TestEChartsSeSirveDesdeElBinario(t *testing.T) {
 	}
 	if rec.Body.Len() < 100_000 {
 		t.Errorf("el archivo mide %d bytes, parece incompleto", rec.Body.Len())
+	}
+}
+
+// La vista que faltaba: el reinicio del 22/08 estaba en la base y no había
+// ninguna pantalla donde se viera.
+func TestVistaEventosMuestraElReinicio(t *testing.T) {
+	h := web.NuevoPanel(datosFalsos{})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720", nil))
+
+	if w.Code != 200 {
+		t.Fatalf("código = %d, quería 200", w.Code)
+	}
+	cuerpo := w.Body.String()
+	for _, quiero := range []string{"el servidor se reinició", "sin datos durante 1m20s"} {
+		if !strings.Contains(cuerpo, quiero) {
+			t.Errorf("la vista no contiene %q", quiero)
+		}
+	}
+}
+
+// El filtro de severidad tiene que poder dejar afuera lo que no es urgente.
+func TestVistaEventosFiltraPorSeveridad(t *testing.T) {
+	h := web.NuevoPanel(datosFalsos{})
+	w := httptest.NewRecorder()
+	// Los errores de log son warning: pidiendo solo críticos no van.
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720&sev=critical", nil))
+
+	if strings.Contains(w.Body.String(), "conexion rechazada") {
+		t.Error("con sev=critical no tendría que aparecer un error de log, que es warning")
+	}
+	if !strings.Contains(w.Body.String(), "el servidor se reinició") {
+		t.Error("el reboot es critical y tendría que aparecer")
+	}
+}
+
+func TestNovedadesOrdenaDeLoMasNuevoALoMasViejo(t *testing.T) {
+	h := web.NuevoPanel(datosFalsos{})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720", nil))
+
+	cuerpo := w.Body.String()
+	reboot := strings.Index(cuerpo, "el servidor se reinició") // 22/08
+	logErr := strings.Index(cuerpo, "conexion rechazada")      // 09/08
+	if reboot < 0 || logErr < 0 {
+		t.Fatal("faltan novedades en la vista")
+	}
+	if reboot > logErr {
+		t.Error("el reinicio del 22/08 tiene que ir ANTES que el error del 09/08")
 	}
 }

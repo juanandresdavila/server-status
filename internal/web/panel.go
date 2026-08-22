@@ -23,6 +23,7 @@ type Datos interface {
 	UltimoEstadoProbes() ([]model.ProbeResult, error)
 	UltimosIncidentes(n int) ([]model.Incidente, error)
 	SerieHost(desde, hasta time.Time) ([]model.HostSample, error)
+	EventosEntre(desde, hasta time.Time, limite int) ([]model.Evento, error)
 }
 
 var plantillaPanel = template.Must(template.New("panel").Funcs(template.FuncMap{
@@ -31,12 +32,12 @@ var plantillaPanel = template.Must(template.New("panel").Funcs(template.FuncMap{
 	"mib":  func(b uint64) float64 { return float64(b) / (1024 * 1024) },
 	"hora": func(t time.Time) string { return t.Local().Format("02/01 15:04") },
 }).ParseFS(plantillas, "plantillas/nav.html", "plantillas/panel.html",
-	"plantillas/logs.html", "plantillas/tail.html"))
+	"plantillas/logs.html", "plantillas/tail.html", "plantillas/eventos.html"))
 
 // nav es lo que el header necesita saber de la vista que lo está pintando.
 // Container puede venir vacío: sin container elegido no hay tail al que ir.
 type nav struct {
-	Activo    string // panel | logs | tail
+	Activo    string // panel | eventos | logs | tail
 	Horas     int
 	Container string
 }
@@ -188,6 +189,51 @@ func NuevoPanel(d Datos) http.Handler {
 			Q:   q.Get("q"), Container: q.Get("container"), Nivel: nivel,
 			Horas: v.Horas, Ventana: v, Truncado: truncado,
 			Containers: nombres, Lineas: lineas, Niveles: niveles, Rangos: rangos,
+		})
+	})
+
+	// /eventos es la vista que faltaba: qué pasó y cuándo, en una sola línea de
+	// tiempo. Hasta ahora los incidentes estaban abajo del panel, los reinicios
+	// no se registraban en ningún lado y los errores de log había que ir a
+	// buscarlos a mano con el filtro puesto.
+	mux.HandleFunc("GET /eventos", func(w http.ResponseWriter, r *http.Request) {
+		v := ventanaDe(r, time.Now())
+		minimo := severidadValida(r.URL.Query().Get("sev"))
+
+		incidentes, err := d.UltimosIncidentes(200)
+		if err != nil {
+			http.Error(w, "no se pudieron leer los incidentes", http.StatusInternalServerError)
+			return
+		}
+		eventos, err := d.EventosEntre(v.Desde, v.Hasta, 200)
+		if err != nil {
+			http.Error(w, "no se pudieron leer los eventos", http.StatusInternalServerError)
+			return
+		}
+		// Solo ERROR: un WARN por container y por minuto llenaría la línea de
+		// tiempo y la volvería tan inútil como el visor de logs sin filtro.
+		errores, err := d.BuscarLogs("", "", "ERROR", v.Desde, v.Hasta, 200)
+		if err != nil {
+			http.Error(w, "no se pudieron leer los errores", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		plantillaPanel.ExecuteTemplate(w, "eventos.html", struct {
+			Nav       nav
+			Ventana   Ventana
+			Horas     int
+			Sev       string
+			Novedades []Novedad
+			Rangos    []struct {
+				Valor int
+				Texto string
+			}
+		}{
+			Nav:     nav{Activo: "eventos", Horas: v.Horas},
+			Ventana: v, Horas: v.Horas, Sev: minimo,
+			Novedades: armarNovedades(incidentes, eventos, errores, v.Desde, v.Hasta, minimo),
+			Rangos:    rangos,
 		})
 	})
 
