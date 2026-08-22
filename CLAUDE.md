@@ -219,6 +219,15 @@ a tocarlos todos cada vez que se agrega una.
   todos en `restarts=0`. La señal buena es `State.StartedAt`, que se mueve
   siempre. La columna REINICIOS del panel sigue mostrando `RestartCount`, que
   es otra cosa y está bien que la muestre.
+- **Una marca de tiempo que se guarda en segundos no se compara con la que vino
+  de Docker.** `State.StartedAt` trae nanosegundos —`05:00:38.932553068Z`— y
+  `container_samples.started_at` guarda segundos, así que al releerla vuelve
+  `05:00:38.000`: SIEMPRE un poco menos que el valor vivo. El detector de
+  reinicios lo leyó como "arrancó de nuevo" en cada tick y mandó un aviso por
+  minuto para los 21 containers, en producción, el 22/08/2026. La comparación va
+  truncada al segundo. **Es la misma trampa que la del cursor de logs**, que está
+  tres puntos más abajo y se resolvió al revés (guardando nanosegundos); si
+  aparece un campo de tiempo nuevo, elegir una de las dos y dejarlo escrito.
 - **El VPS corre en `Etc/UTC`, así que `time.Local` allá es UTC.** El panel usó
   `.Local()` hasta el 22/08/2026 y mostraba UTC mientras uno lo leía como hora
   argentina. La zona sale de `zona` en la config y entra a `web.NuevoPanel`.
