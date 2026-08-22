@@ -31,6 +31,19 @@ form que la vista), orden por columna en las tablas del panel, memoria y disco a
 decimales, cpu promedio en el `/status` de Telegram e `INSTALLATION.md` con
 `deploy/install.sh`.
 
+**Tanda del 22/08/2026 — eventos discretos y niveles de log.** La motivó un
+reinicio del host que no avisó a nadie. Ver
+`docs/superpowers/plans/2026-08-22-eventos-niveles-y-rango.md`:
+
+- **Eventos discretos** (`internal/rules/eventos.go`): reinicio del host y de
+  containers. El motor de reglas solo modela estados *sostenidos*, así que un
+  corte de 18 segundos no entraba en ninguna regla.
+- **Niveles de log** TRACE/INFO/WARN/ERROR (`internal/logs`), con filtro en el
+  visor y en el export.
+- **Rango desde–hasta** explícito en `/logs`, y **aviso de truncado**.
+- **Vista `/eventos`**: incidentes, reinicios y errores de log en una línea de
+  tiempo única.
+
 ## Required reading
 
 - **`docs/superpowers/specs/2026-08-08-server-status-design.md`** — spec vigente.
@@ -74,11 +87,19 @@ Un proceso. Todo lo demás son caminos que entran o salen de él.
 ```
 /proc, /sys ──→ collector/host ──┐
 docker.sock ──→ collector/docker ─┼─→ store (SQLite) ──→ web (fase 5)
-                                  │        ↑
+                                  │        ↑                └─ /eventos
 URLs públicas ←── prober ─────────┘        │
-                                    rules/motor ──→ notify ──→ comm-tool → Telegram
-                                                        └────→ api.telegram.org (respaldo)
+                        logs/Clasificar ───┤
+                                    rules/motor ────→ notify ──→ comm-tool → Telegram
+                                    rules/eventos ──┘     └────→ api.telegram.org (respaldo)
 ```
+
+**`internal/rules` tiene dos mitades y conviene no confundirlas.** `motor.go`
+modela estados **sostenidos** —3 fallas seguidas, un umbral aguantado 10
+minutos— y produce *incidentes*, que abren y cierran. `eventos.go` modela
+hechos **puntuales** —un reinicio— y produce *eventos*, que solo ocurren. Son
+tablas distintas porque un evento no se cierra, y meterlo en `incidents`
+chocaría contra `incidentes_abierto_unico`.
 
 - **`cmd/server-status`** es el único que lee `process.env` y arma las
   dependencias. Los paquetes de `internal/` las reciben inyectadas — por eso
@@ -137,7 +158,15 @@ leen los containers, se pinchan los servicios y se evalúan las reglas.
 ## Migraciones
 
 Strings en el slice `migraciones` de `internal/store/store.go`, aplicadas en
-orden, cada una en su transacción y registradas en `schema_migrations`. **Nunca
+orden, cada una en su transacción y registradas en `schema_migrations`.
+
+**El nivel de log vive en `log_niveles`, una tabla lateral atada por el `rowid`
+del FTS5, y no como columna de `logs`.** Agregarle una columna a una tabla FTS5
+obliga a recrearla y reindexar el texto entero con el proceso bloqueado en
+`store.Open`; con 802 200 filas y 191 MB eso son minutos de arranque. Medido:
+así las migraciones tardan **147 ms** sobre la base real. La contra es que
+`BorrarLogsAnterioresA` tiene que podar las dos tablas o `log_niveles` crece
+para siempre — va en la misma transacción y tiene test. **Nunca
 se edita una ya aplicada**: para cambiar el esquema se agrega otra al final. El
 runner se niega a arrancar si la base está más adelante que el binario — eso es
 alguien deployando para atrás.
@@ -183,6 +212,28 @@ a tocarlos todos cada vez que se agrega una.
   `veth*`: ese tráfico ya está contado del lado de la interfaz real.
 - **La memoria usada se calcula contra `MemAvailable`, no contra `MemFree`.** El
   page cache figura como ocupado pero el kernel lo suelta cuando hace falta.
+- **`RestartCount` NO dice si un container se reinició.** Solo cuenta los
+  reinicios por *política*: un arranque junto con el host lo deja igual y una
+  recreación con `compose up -d` lo resetea a cero. Verificado el 22/08/2026
+  después del reboot — los 21 containers arrancaron a las 05:00:38 y quedaron
+  todos en `restarts=0`. La señal buena es `State.StartedAt`, que se mueve
+  siempre. La columna REINICIOS del panel sigue mostrando `RestartCount`, que
+  es otra cosa y está bien que la muestre.
+- **El VPS corre en `Etc/UTC`, así que `time.Local` allá es UTC.** El panel usó
+  `.Local()` hasta el 22/08/2026 y mostraba UTC mientras uno lo leía como hora
+  argentina. La zona sale de `zona` en la config y entra a `web.NuevoPanel`.
+  Cuidado al testear esto desde la Mac: ahí `time.Local` **es** Buenos Aires, y
+  un test con esa zona pasa igual con el bug puesto. Los tests usan
+  `Asia/Tokyo` justamente por eso.
+- **`t.In(nil)` paniquea, y un panic adentro de una plantilla deja media página
+  escrita con un `200` arriba.** El error de `ExecuteTemplate` hay que mirarlo:
+  si no, una plantilla rota se ve como una página cortada y no como un fallo.
+- **`ts` es `UNINDEXED` en la tabla FTS5 `logs`.** Una búsqueda sin texto es un
+  scan completo. Con 800 000 filas se nota, y no está arreglado.
+- **Un solo container ruidoso te tapa la ventana entera.** El cron de pomodoro
+  de study-master vuelca 33 líneas de SQL por minuto: 582 757 de las 802 200
+  filas guardadas (73 %). Por eso un export de "24 h" cubría 4 h 54 m. Los
+  niveles lo mitigan —ese volcado es TRACE— pero la causa está en el otro repo.
 
 ## Este repo es público
 

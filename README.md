@@ -18,6 +18,14 @@ ordenables por columna, memoria y disco alternables entre % y GiB, búsqueda de 
 logs como texto plano) y comandos por Telegram; un watchdog externo cubre el
 caso de que se muera todo.
 
+Además detecta **hechos puntuales** —que la máquina se reinició, que volvieron
+containers— que las reglas por estado sostenido no pueden ver, y los muestra
+junto a los incidentes y los errores de log en una línea de tiempo única en
+`/eventos`. Cada línea de log se clasifica en **TRACE / INFO / WARN / ERROR**,
+que es lo que permite filtrar el ruido: en esta instalación el 79 % del volumen
+es TRACE, y sin ese filtro una consulta de "últimas 24 h" alcanzaba el tope de
+líneas a las 5 horas y recortaba el resto sin decirlo.
+
 | Fase | Qué trae | Estado |
 |---|---|---|
 | 0 | Scaffold, CI, unit de systemd | ✅ |
