@@ -956,3 +956,83 @@ func (s *Store) VacuumInto(destino string) error {
 	}
 	return nil
 }
+
+// GuardarEvento registra un hecho puntual y devuelve su id.
+func (s *Store) GuardarEvento(e model.Evento) (int64, error) {
+	res, err := s.db.Exec(`
+		INSERT INTO eventos (tipo, sujeto, severidad, ocurrido_en, detalle)
+		VALUES (?,?,?,?,?)`,
+		e.Tipo, e.Sujeto, e.Severidad, e.OcurridoEn.Unix(), e.Detalle)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// EventosPendientes son los que todavía no se avisaron.
+//
+// Se DERIVAN comparando eventos contra notifications, igual que los avisos de
+// incidentes: la cola no existe como tabla (invariante 9 del spec). Un evento
+// sin su fila 'evento:<id>' ES un aviso pendiente, así que una caída entre
+// registrar el evento y mandar el mensaje se resuelve sola en el tick siguiente.
+//
+// Los de severidad 'info' quedan afuera a propósito: el arranque del propio
+// monitor se registra para que aparezca en la línea de tiempo, pero mandar un
+// mensaje en cada `make deploy` es exactamente lo que hace que después nadie
+// lea los mensajes.
+func (s *Store) EventosPendientes() ([]model.Evento, error) {
+	filas, err := s.db.Query(`
+		SELECT e.id, e.tipo, e.sujeto, e.severidad, e.ocurrido_en, e.detalle
+		FROM eventos e
+		LEFT JOIN notifications n ON n.delivery_id = 'evento:' || CAST(e.id AS TEXT)
+		WHERE n.delivery_id IS NULL AND e.severidad <> 'info'
+		ORDER BY e.ocurrido_en`)
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+	return escanearEventos(filas)
+}
+
+// EventosEntre alimenta la vista /eventos.
+func (s *Store) EventosEntre(desde, hasta time.Time, limite int) ([]model.Evento, error) {
+	filas, err := s.db.Query(`
+		SELECT id, tipo, sujeto, severidad, ocurrido_en, detalle
+		FROM eventos
+		WHERE ocurrido_en >= ? AND ocurrido_en <= ?
+		ORDER BY ocurrido_en DESC LIMIT ?`,
+		desde.Unix(), hasta.Unix(), limite)
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+	return escanearEventos(filas)
+}
+
+func escanearEventos(filas *sql.Rows) ([]model.Evento, error) {
+	var out []model.Evento
+	for filas.Next() {
+		var (
+			e  model.Evento
+			ts int64
+		)
+		if err := filas.Scan(&e.ID, &e.Tipo, &e.Sujeto, &e.Severidad, &ts, &e.Detalle); err != nil {
+			return nil, err
+		}
+		e.OcurridoEn = time.Unix(ts, 0).UTC()
+		out = append(out, e)
+	}
+	return out, filas.Err()
+}
+
+// UltimaHostSample devuelve la muestra más reciente ya guardada.
+//
+// Se lee ANTES de insertar la nueva: es contra ella que se compara el uptime
+// para saber si la máquina se reinició mientras el proceso estaba muerto.
+func (s *Store) UltimaHostSample() (model.HostSample, bool, error) {
+	ms, err := s.UltimasHostSamples(1)
+	if err != nil || len(ms) == 0 {
+		return model.HostSample{}, false, err
+	}
+	return ms[0], true, nil
+}

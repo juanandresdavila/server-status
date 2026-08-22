@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/juanandresdavila/server-status/internal/model"
 	"github.com/juanandresdavila/server-status/internal/notify"
 )
 
@@ -100,5 +101,28 @@ func TestResumenSinIncidentesLoDiceAsi(t *testing.T) {
 	got := notify.TextoResumen(notify.Resumen{Incidentes: 0})
 	if !strings.Contains(got, "sin incidentes") {
 		t.Errorf("el resumen de un día tranquilo no lo dice: %q", got)
+	}
+}
+
+func TestTextoEventoDiceQuePasoYCuando(t *testing.T) {
+	e := model.Evento{
+		Tipo: "reboot", Sujeto: "host", Severidad: "critical",
+		OcurridoEn: time.Date(2026, 8, 22, 5, 0, 31, 0, time.UTC),
+		Detalle:    "la máquina se reinició: arrancó 22/08 02:00:31, sin datos durante 1m20s",
+	}
+	got := notify.TextoEvento(e)
+	if !strings.Contains(got, "se reinició") {
+		t.Errorf("el mensaje no dice qué pasó: %q", got)
+	}
+	if !strings.Contains(got, "1m20s") {
+		t.Errorf("el mensaje no lleva el detalle: %q", got)
+	}
+}
+
+func TestTextoEventoDeContainersEsDistintoDelReboot(t *testing.T) {
+	reboot := notify.TextoEvento(model.Evento{Tipo: "reboot", Severidad: "critical", Detalle: "x"})
+	cont := notify.TextoEvento(model.Evento{Tipo: "container_restart", Severidad: "warning", Detalle: "x"})
+	if reboot == cont {
+		t.Error("un reboot y un reinicio de containers no pueden leerse igual")
 	}
 }
