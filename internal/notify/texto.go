@@ -117,3 +117,33 @@ func TextoResumen(r Resumen) string {
 	}
 	return acortar(b.String())
 }
+
+// TextoEvento arma el mensaje de un hecho puntual.
+//
+// Los eventos no abren ni cierran, así que no llevan el par 🔴/🟢 de los
+// incidentes: un reinicio ya terminó cuando uno se entera. Lo que importa es
+// cuándo pasó y qué se llevó puesto.
+func TextoEvento(e model.Evento) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %s\n%s", iconoDeEvento(e), tituloDeEvento(e), e.Detalle)
+	return acortar(b.String())
+}
+
+func iconoDeEvento(e model.Evento) string {
+	if e.Severidad == "critical" {
+		return "🔁"
+	}
+	return "♻️"
+}
+
+func tituloDeEvento(e model.Evento) string {
+	switch e.Tipo {
+	case "reboot":
+		return "El servidor se reinició"
+	case "container_restart":
+		return "Containers reiniciados"
+	case "monitor_start":
+		return "El monitor arrancó"
+	}
+	return "Evento en " + NombreDeSujeto(e.Sujeto)
+}

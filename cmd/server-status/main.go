@@ -235,6 +235,16 @@ func correr(cfg config.Config, col *host.Collector) error {
 	var limpieza recordatorioDiario
 	slog.Info("server-status arrancó", "base", cfg.Base, "muestreo", cfg.IntervaloMuestreo)
 
+	// El arranque queda en la línea de tiempo con severidad 'info', que
+	// EventosPendientes deja afuera: sirve para entender después por qué hay un
+	// hueco en los datos, sin mandar un mensaje en cada `make deploy`.
+	if _, err := s.GuardarEvento(model.Evento{
+		Tipo: "monitor_start", Sujeto: "server-status", Severidad: "info",
+		OcurridoEn: clock.Real{}.Now(), Detalle: "el monitor arrancó",
+	}); err != nil {
+		slog.Error("no se pudo registrar el arranque", "err", err)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -270,6 +280,20 @@ func correr(cfg config.Config, col *host.Collector) error {
 			if !ok {
 				continue
 			}
+
+			// El "antes" se lee ANTES de insertar, o se termina comparando la
+			// muestra nueva contra sí misma. Es contra esto que se detecta que
+			// la máquina se reinició mientras el proceso estaba muerto: es la
+			// única forma, porque un proceso caído no observa su propia ausencia.
+			hostAntes, _, err := s.UltimaHostSample()
+			if err != nil {
+				slog.Error("no se pudo leer la muestra anterior", "err", err)
+			}
+			contAntes, err := s.UltimoEstadoContainers()
+			if err != nil {
+				slog.Error("no se pudo leer el estado anterior de los containers", "err", err)
+			}
+
 			if err := s.InsertHostSample(m); err != nil {
 				slog.Error("no se pudo guardar la muestra", "err", err)
 			}
@@ -289,6 +313,21 @@ func correr(cfg config.Config, col *host.Collector) error {
 			}
 			if err := s.InsertContainerSamples(ms); err != nil {
 				slog.Error("no se pudieron guardar los containers", "err", err)
+			}
+
+			// Eventos discretos: reinicios. El motor de reglas no los ve porque
+			// solo sabe de estados sostenidos —tres muestras malas seguidas— y
+			// un reinicio dura segundos. El del host del 22/08 duró 18.
+			for _, ev := range rules.DetectarEventos(hostAntes, m, contAntes, ms, clock.Real{}.Now()) {
+				id, err := s.GuardarEvento(ev)
+				if err != nil {
+					slog.Error("no se pudo guardar el evento", "tipo", ev.Tipo, "err", err)
+					continue
+				}
+				// El aviso NO sale de acá: se deriva de la base en el bloque de
+				// pendientes, igual que los incidentes. Invariante 9.
+				slog.Warn("evento", "id", id, "tipo", ev.Tipo,
+					"severidad", ev.Severidad, "detalle", ev.Detalle)
 			}
 
 			// Probes: uno por servicio, todos en paralelo. Son cuatro requests
@@ -385,6 +424,17 @@ func correr(cfg config.Config, col *host.Collector) error {
 				if err := notificador.Avisar(ctx, av); err != nil {
 					// No se marca nada: el tick siguiente lo reintenta.
 					slog.Error("no se pudo entregar el aviso", "delivery", av.DeliveryID, "err", err)
+				}
+			}
+
+			evsPendientes, err := s.EventosPendientes()
+			if err != nil {
+				slog.Error("no se pudieron leer los eventos pendientes", "err", err)
+			}
+			for _, ev := range evsPendientes {
+				id := fmt.Sprintf("evento:%d", ev.ID)
+				if err := notificador.AvisarTexto(ctx, id, notify.TextoEvento(ev)); err != nil {
+					slog.Error("no se pudo entregar el evento", "delivery", id, "err", err)
 				}
 			}
 
