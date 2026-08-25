@@ -107,7 +107,9 @@ type cpuStatsAPI struct {
 		TotalUsage uint64 `json:"total_usage"`
 	} `json:"cpu_usage"`
 	SystemUsage uint64 `json:"system_cpu_usage"`
-	OnlineCPUs  uint64 `json:"online_cpus"`
+	// OnlineCPUs se parsea pero NO entra en la cuenta: multiplicar por los
+	// cores es lo que hace docker stats y deja el % relativo a un core.
+	OnlineCPUs uint64 `json:"online_cpus"`
 }
 
 type statsAPI struct {
@@ -136,17 +138,18 @@ func (c *Client) Stats(ctx context.Context, id string) (Uso, error) {
 	}, nil
 }
 
+// cpuPct devuelve el uso como % de la CAPACIDAD TOTAL de la máquina, no de un
+// core. docker stats multiplica por OnlineCPUs (ahí 100% = un core y el tope
+// real es cores×100), y con esa escala el panel mostraba containers "al 25%"
+// con el host al 8%. system_cpu_usage ya suma todos los cores, así que el
+// cociente solo es la fracción de la máquina.
 func cpuPct(s statsAPI) float64 {
 	deltaCPU := float64(s.CPUStats.CPUUsage.TotalUsage) - float64(s.PreCPUStats.CPUUsage.TotalUsage)
 	deltaSys := float64(s.CPUStats.SystemUsage) - float64(s.PreCPUStats.SystemUsage)
 	if deltaCPU <= 0 || deltaSys <= 0 {
 		return 0
 	}
-	cpus := float64(s.CPUStats.OnlineCPUs)
-	if cpus == 0 {
-		cpus = 1
-	}
-	return deltaCPU / deltaSys * cpus * 100
+	return deltaCPU / deltaSys * 100
 }
 
 // memReal descuenta el page cache reclamable, que es lo que hace docker stats
