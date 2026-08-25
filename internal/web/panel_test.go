@@ -478,6 +478,28 @@ func TestLoQueSeMuestraNoSaleDeTimeLocal(t *testing.T) {
 	}
 }
 
+// Los carteles de ayuda se van (pedido del 25/08) y los filtros se aplican
+// solos: no hay botón "buscar" ni "ver" que apretar.
+func TestSinCartelDeAyudaYSinBotonBuscar(t *testing.T) {
+	for _, ruta := range []string{"/logs", "/eventos?horas=720"} {
+		cuerpo := pedir(t, ruta).Body.String()
+		if strings.Contains(cuerpo, "La búsqueda es por palabra completa") ||
+			strings.Contains(cuerpo, "Todo lo que pasó, en orden") {
+			t.Errorf("%s todavía muestra el cartel de ayuda", ruta)
+		}
+		if strings.Contains(cuerpo, ">buscar</button>") || strings.Contains(cuerpo, ">ver</button>") {
+			t.Errorf("%s todavía tiene botón de submit manual", ruta)
+		}
+		if !strings.Contains(cuerpo, "form.submit()") {
+			t.Errorf("%s no auto-aplica los filtros", ruta)
+		}
+	}
+	// El export sigue: es la única acción que no puede ser automática.
+	if cuerpo := pedir(t, "/logs").Body.String(); !strings.Contains(cuerpo, "/logs/export") {
+		t.Error("/logs perdió el botón de exportar")
+	}
+}
+
 // El orden por defecto pone lo roto arriba: para eso existe el panel. Después,
 // servicios por latencia y containers por RAM, los más pesados primero. El
 // orden por columna del navegador queda para todo lo demás.
