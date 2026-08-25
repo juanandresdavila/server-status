@@ -17,7 +17,7 @@
   pre { font: 12.5px/1.6 ui-monospace, Menlo, monospace; margin: 0;
         border: 1px solid var(--borde); border-radius: .5rem; padding: .75rem;
         overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
-  .l { display: grid; grid-template-columns: 5.5rem 3.6rem 11rem 1fr; gap: .75rem; }
+  .l { display: grid; grid-template-columns: 10rem 3.6rem 11rem 1fr; gap: .75rem; }
   .l + .l { margin-top: .2rem; }
   .t, .c { opacity: .55; }
   .vacio { opacity: .6; padding: 1rem 0; }
@@ -94,7 +94,7 @@
 
 <pre>
 {{- range .Lineas }}
-<div class="l lv-{{ .Nivel }}"><span class="t">{{ (en .TS $.Zona).Format "15:04:05" }}</span><span class="n n-{{ .Nivel }}">{{ .Nivel }}</span><span class="c">{{ .Container }}</span><span class="m">{{ .Linea }}</span></div>
+<div class="l lv-{{ .Nivel }}"><span class="t">{{ (en .TS $.Zona).Format "02/01/2006 15:04:05" }}</span><span class="n n-{{ .Nivel }}">{{ .Nivel }}</span><span class="c">{{ .Container }}</span><span class="m">{{ .Linea }}</span></div>
 {{- else }}
 <div class="vacio">sin resultados</div>
 {{- end }}

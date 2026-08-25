@@ -35,7 +35,7 @@ var plantillaPanel = template.Must(template.New("panel").Funcs(template.FuncMap{
 	// Sin zona fija sería t.Local(), y el VPS corre en Etc/UTC: el panel venía
 	// mostrando UTC mientras uno lo leía como hora argentina. La zona sale de
 	// la config, que es la misma que usa el resumen diario.
-	"hora": func(t time.Time, loc *time.Location) string { return enZona(t, loc).Format("02/01 15:04") },
+	"hora": func(t time.Time, loc *time.Location) string { return enZona(t, loc).Format("02/01/2006 15:04") },
 	"en":   enZona,
 }).ParseFS(plantillas, "plantillas/nav.html", "plantillas/panel.html",
 	"plantillas/logs.html", "plantillas/tail.html", "plantillas/eventos.html"))

@@ -463,6 +463,23 @@ func TestLoQueSeMuestraNoSaleDeTimeLocal(t *testing.T) {
 	}
 }
 
+// La hora sola obliga a adivinar el día: con 30 días de rango, "02:00:42"
+// puede ser cualquiera de treinta madrugadas. Fecha completa, DD/MM/YYYY.
+func TestLasFechasLlevanDiaMesYAnio(t *testing.T) {
+	// La línea falsa de logs es 12:00 UTC del 09/08 → 09:00 en Buenos Aires.
+	if cuerpo := pedir(t, "/logs").Body.String(); !strings.Contains(cuerpo, "09/08/2026 09:00:00") {
+		t.Error("/logs no muestra la fecha completa (esperaba 09/08/2026 09:00:00)")
+	}
+	// El evento falso es 05:00:31 UTC del 22/08 → 02:00:31 en Buenos Aires.
+	if cuerpo := pedir(t, "/eventos?horas=720").Body.String(); !strings.Contains(cuerpo, "22/08/2026 02:00:31") {
+		t.Error("/eventos no muestra la fecha completa")
+	}
+	// El incidente falso abrió el 09/08.
+	if cuerpo := pedir(t, "/").Body.String(); !strings.Contains(cuerpo, "09/08/2026") {
+		t.Error("el panel no muestra la fecha completa en incidentes")
+	}
+}
+
 // El filtro es un toggle por ítem, no un "mínimo": WARN apagado con ERROR
 // prendido no se puede decir con un piso.
 func TestElFiltroDeNivelEsPorConjunto(t *testing.T) {
