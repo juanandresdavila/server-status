@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es">
+<html lang="{{ lang }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -57,30 +57,30 @@
 <h1>server-status</h1>
 <div class="sub">
   uptime {{ printf "%.0f" .Host.Uptime.Hours }} h ·
-  carga {{ printf "%.2f" .Host.Load1 }} / {{ printf "%.2f" .Host.Load5 }} / {{ printf "%.2f" .Host.Load15 }} ·
-  actualizado {{ hora .Host.TS .Zona }}
+  {{ t "carga" }} {{ printf "%.2f" .Host.Load1 }} / {{ printf "%.2f" .Host.Load5 }} / {{ printf "%.2f" .Host.Load15 }} ·
+  {{ t "actualizado" }} {{ hora .Host.TS .Zona }}
 </div>
 
 <div class="tarjetas">
   <div class="tarjeta"><div class="k">CPU</div>
     <div class="v">{{ printf "%.2f" .Host.CPUPctAvg }}%</div></div>
-  <div class="tarjeta"><div class="k">CPU pico</div>
+  <div class="tarjeta"><div class="k">{{ t "cpu-pico" }}</div>
     <div class="v">{{ printf "%.2f" .Host.CPUPctMax }}%</div></div>
   {{/* Las dos unidades viajan en el HTML y el toggle es puro navegador: un
        click alterna % ↔ GiB acá y en el gráfico correspondiente. */}}
-  <div class="tarjeta alternable" data-serie="mem" title="click: % ↔ GiB"><div class="k">Memoria</div>
+  <div class="tarjeta alternable" data-serie="mem" title="click: % ↔ GiB"><div class="k">{{ t "memoria" }}</div>
     <div class="v" data-pct="{{ printf "%.2f" (pct .Host.MemUsedBytes .Host.MemTotalBytes) }}%"
          data-gib="{{ printf "%.2f" (gib .Host.MemUsedBytes) }} / {{ printf "%.2f" (gib .Host.MemTotalBytes) }} GiB"></div></div>
-  <div class="tarjeta alternable" data-serie="disco" title="click: % ↔ GiB"><div class="k">Disco</div>
+  <div class="tarjeta alternable" data-serie="disco" title="click: % ↔ GiB"><div class="k">{{ t "disco" }}</div>
     <div class="v" data-pct="{{ printf "%.2f" (pct .Host.DiskUsedBytes .Host.DiskTotalBytes) }}%"
          data-gib="{{ printf "%.2f" (gib .Host.DiskUsedBytes) }} / {{ printf "%.2f" (gib .Host.DiskTotalBytes) }} GiB"></div></div>
   <div class="tarjeta"><div class="k">Swap</div>
     <div class="v">{{ printf "%.2f" (pct .Host.SwapUsedBytes .Host.SwapTotalBytes) }}%</div></div>
 </div>
 
-<h2>Historial</h2>
+<h2>{{ t "historial" }}</h2>
 <div class="rangos">
-  {{ range .Rangos }}<a href="?horas={{ .Valor }}">{{ .Texto }}</a>{{ end }}
+  {{ range .Rangos }}<a href="?horas={{ . }}">{{ t (printf "rango-%d" .) }}</a>{{ end }}
 </div>
 <div class="graficos">
   <div id="g-cpu" class="grafico"></div>
@@ -89,13 +89,13 @@
   <div id="g-load" class="grafico"></div>
 </div>
 
-<h2>Servicios</h2>
+<h2>{{ t "servicios" }}</h2>
 <table>
-  <tr><th>Servicio</th><th>Estado</th><th>Código</th><th>Latencia</th><th>Detalle</th></tr>
+  <tr><th>{{ t "servicio" }}</th><th>{{ t "estado" }}</th><th>{{ t "codigo" }}</th><th>{{ t "latencia" }}</th><th>{{ t "detalle" }}</th></tr>
   {{ range .Probes }}
   <tr>
     <td>{{ .Servicio }}</td>
-    <td class="{{ if .OK }}bien{{ else }}mal{{ end }}">{{ if .OK }}OK{{ else }}CAÍDO{{ end }}</td>
+    <td class="{{ if .OK }}bien{{ else }}mal{{ end }}">{{ if .OK }}OK{{ else }}{{ t "caido" }}{{ end }}</td>
     <td>{{ .StatusCode }}</td>
     <td>{{ .Latencia.Milliseconds }} ms</td>
     <td class="err">{{ .Error }}</td>
@@ -105,7 +105,7 @@
 
 <h2>Containers</h2>
 <table>
-  <tr><th>Nombre</th><th>Estado</th><th>Salud</th><th>CPU</th><th>Memoria</th><th>Reinicios</th></tr>
+  <tr><th>{{ t "nombre" }}</th><th>{{ t "estado" }}</th><th>{{ t "salud" }}</th><th>CPU</th><th>{{ t "memoria" }}</th><th>{{ t "reinicios" }}</th></tr>
   {{ range .Containers }}
   <tr>
     {{/* El nombre lleva a sus logs: ver un container en unhealthy y tener que
@@ -120,9 +120,9 @@
   {{ end }}
 </table>
 
-<h2>Incidentes</h2>
+<h2>{{ t "incidentes" }}</h2>
 <table>
-  <tr><th>Sujeto</th><th>Severidad</th><th>Desde</th><th>Hasta</th><th>Detalle</th><th></th></tr>
+  <tr><th>{{ t "sujeto" }}</th><th>{{ t "severidad" }}</th><th>{{ t "desde-col" }}</th><th>{{ t "hasta-col" }}</th><th>{{ t "detalle" }}</th><th></th></tr>
   {{ range .Incidentes }}
   <tr>
     <td>{{ .Sujeto }}</td>
@@ -131,7 +131,7 @@
          que el mes; el epoch ordena bien. Un incidente abierto sigue vigente,
          por eso su data-v es "infinito" y queda como el más reciente. */}}
     <td data-v="{{ .AbiertoEn.Unix }}">{{ hora .AbiertoEn $.Zona }}</td>
-    <td {{ if .CerradoEn }}data-v="{{ .CerradoEn.Unix }}"{{ else }}data-v="99999999999"{{ end }}>{{ if .CerradoEn }}{{ hora .CerradoEn $.Zona }}{{ else }}<span class="mal">abierto</span>{{ end }}</td>
+    <td {{ if .CerradoEn }}data-v="{{ .CerradoEn.Unix }}"{{ else }}data-v="99999999999"{{ end }}>{{ if .CerradoEn }}{{ hora .CerradoEn $.Zona }}{{ else }}<span class="mal">{{ t "abierto" }}</span>{{ end }}</td>
     <td class="err">{{ .Detalle }}</td>
     {{/* La acción que corresponde y ninguna otra: abierto → resolver (cierra
          por el mismo camino que el motor, avisa por Telegram, y si sigue mal
@@ -139,14 +139,14 @@
          historia queda en /eventos). */}}
     <td>
       {{ if not .CerradoEn }}
-      <form method="post" action="/incidents/{{ .ID }}/resolve"><button>resolver</button></form>
+      <form method="post" action="/incidents/{{ .ID }}/resolve"><button>{{ t "resolver" }}</button></form>
       {{ else }}
-      <form method="post" action="/incidents/{{ .ID }}/archive"><button>archivar</button></form>
+      <form method="post" action="/incidents/{{ .ID }}/archive"><button>{{ t "archivar" }}</button></form>
       {{ end }}
     </td>
   </tr>
   {{ else }}
-  <tr><td colspan="6" style="opacity:.6">sin incidentes registrados</td></tr>
+  <tr><td colspan="6" style="opacity:.6">{{ t "sin-incidentes" }}</td></tr>
   {{ end }}
 </table>
 
@@ -156,14 +156,14 @@
   // Memoria y disco tienen dos variantes; la unidad elegida vive en
   // localStorage porque la página se recarga sola cada 60 s.
   const series = [
-    { id: 'g-cpu',   variantes: { pct: { titulo: 'CPU %', campo: 'cpu', max: 100, unidad: '%' } } },
+    { id: 'g-cpu',   variantes: { pct: { titulo: '{{ t "g-cpu" }}', campo: 'cpu', max: 100, unidad: '%' } } },
     { id: 'g-mem',   variantes: {
-        pct: { titulo: 'Memoria %',     campo: 'mem',     max: 100,             unidad: '%' },
-        gib: { titulo: 'Memoria (GiB)', campo: 'mem_gib', maxDe: 'mem_total_gib', unidad: ' GiB' } } },
+        pct: { titulo: '{{ t "g-mem" }}',     campo: 'mem',     max: 100,             unidad: '%' },
+        gib: { titulo: '{{ t "g-mem-gib" }}', campo: 'mem_gib', maxDe: 'mem_total_gib', unidad: ' GiB' } } },
     { id: 'g-disco', variantes: {
-        pct: { titulo: 'Disco %',     campo: 'disco',     max: 100,               unidad: '%' },
-        gib: { titulo: 'Disco (GiB)', campo: 'disco_gib', maxDe: 'disco_total_gib', unidad: ' GiB' } } },
-    { id: 'g-load',  variantes: { pct: { titulo: 'Carga (1 min)', campo: 'load', max: null, unidad: '' } } },
+        pct: { titulo: '{{ t "g-disco" }}',     campo: 'disco',     max: 100,               unidad: '%' },
+        gib: { titulo: '{{ t "g-disco-gib" }}', campo: 'disco_gib', maxDe: 'disco_total_gib', unidad: ' GiB' } } },
+    { id: 'g-load',  variantes: { pct: { titulo: '{{ t "g-load" }}', campo: 'load', max: null, unidad: '' } } },
   ]
 
   let unidad = localStorage.getItem('unidad-mem-disco') === 'gib' ? 'gib' : 'pct'

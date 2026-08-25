@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -381,7 +382,7 @@ func TestEChartsSeSirveDesdeElBinario(t *testing.T) {
 func TestVistaEventosMuestraElReinicio(t *testing.T) {
 	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720", nil))
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/events?horas=720", nil))
 
 	if w.Code != 200 {
 		t.Fatalf("código = %d, quería 200", w.Code)
@@ -397,7 +398,7 @@ func TestVistaEventosMuestraElReinicio(t *testing.T) {
 // El filtro de severidad es un toggle por ítem: pidiendo solo critical, un
 // warning no va — y un conjunto no contiguo (info+critical) también se puede.
 func TestVistaEventosFiltraPorSeveridad(t *testing.T) {
-	cuerpo := pedir(t, "/eventos?horas=720&sev=info&sev=critical").Body.String()
+	cuerpo := pedir(t, "/events?horas=720&sev=info&sev=critical").Body.String()
 	if strings.Contains(cuerpo, "conexion rechazada") {
 		t.Error("con warning apagado no va un error de log, que es warning")
 	}
@@ -408,7 +409,7 @@ func TestVistaEventosFiltraPorSeveridad(t *testing.T) {
 	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
 	// Los errores de log son warning: pidiendo solo críticos no van.
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720&sev=critical", nil))
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/events?horas=720&sev=critical", nil))
 
 	if strings.Contains(w.Body.String(), "conexion rechazada") {
 		t.Error("con sev=critical no tendría que aparecer un error de log, que es warning")
@@ -421,7 +422,7 @@ func TestVistaEventosFiltraPorSeveridad(t *testing.T) {
 func TestNovedadesOrdenaDeLoMasNuevoALoMasViejo(t *testing.T) {
 	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720", nil))
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/events?horas=720", nil))
 
 	cuerpo := w.Body.String()
 	reboot := strings.Index(cuerpo, "el servidor se reinició") // 22/08
@@ -468,7 +469,7 @@ func TestElRangoSeInterpretaEnLaZonaConfigurada(t *testing.T) {
 func TestLasHorasSeMuestranEnLaZonaConfigurada(t *testing.T) {
 	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720", nil))
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/events?horas=720", nil))
 
 	// El evento falso ocurrió 05:00:31 UTC → 02:00:31 en Buenos Aires.
 	if !strings.Contains(w.Body.String(), "02:00:31") {
@@ -488,11 +489,57 @@ func TestLoQueSeMuestraNoSaleDeTimeLocal(t *testing.T) {
 	}
 	h := web.NuevoPanel(datosFalsos{}, tokio)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/eventos?horas=720", nil))
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/events?horas=720", nil))
 
 	// 05:00:31 UTC → 14:00:31 en Tokio.
 	if !strings.Contains(w.Body.String(), "14:00:31") {
 		t.Error("con zona Tokio la vista tendría que mostrar 14:00:31")
+	}
+}
+
+// El panel habla español por defecto; ?lang=en lo cambia y lo recuerda en una
+// cookie, así el auto-reload de 60 s no lo devuelve al castellano.
+func TestElPanelEsBilingue(t *testing.T) {
+	if cuerpo := pedir(t, "/").Body.String(); !strings.Contains(cuerpo, "Servicios") {
+		t.Error("sin elegir nada el panel habla español")
+	}
+
+	rec := pedir(t, "/?lang=en")
+	if !strings.Contains(rec.Body.String(), "Services") {
+		t.Error("?lang=en no cambia el idioma")
+	}
+	if !strings.Contains(rec.Header().Get("Set-Cookie"), "lang=en") {
+		t.Error("?lang=en no persiste en la cookie")
+	}
+
+	// La cookie sola alcanza, sin query param.
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "lang", Value: "en"})
+	w := httptest.NewRecorder()
+	web.NuevoPanel(datosFalsos{}, zonaDePrueba).ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), "Services") {
+		t.Error("la cookie lang=en no aplica")
+	}
+
+	// Y los textos armados en Go también cambian: el título de un evento.
+	req = httptest.NewRequest("GET", "/events?horas=720", nil)
+	req.AddCookie(&http.Cookie{Name: "lang", Value: "en"})
+	w = httptest.NewRecorder()
+	web.NuevoPanel(datosFalsos{}, zonaDePrueba).ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), "the server rebooted") {
+		t.Error("los títulos de eventos no se traducen")
+	}
+}
+
+// /eventos era la única ruta en castellano; pasa a /events con redirect
+// permanente para los marcadores viejos, query incluida.
+func TestEventosRedirigeAEvents(t *testing.T) {
+	rec := pedir(t, "/eventos?horas=720")
+	if rec.Code != 301 {
+		t.Fatalf("código = %d, quería 301", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/events?horas=720" {
+		t.Errorf("Location = %q, quería /events?horas=720", loc)
 	}
 }
 
@@ -531,7 +578,7 @@ func TestElPanelEscondeArchivadosYEventosNo(t *testing.T) {
 	if cuerpo := pedir(t, "/").Body.String(); strings.Contains(cuerpo, "service:viejo-archivado") {
 		t.Error("el panel muestra un incidente archivado")
 	}
-	if cuerpo := pedir(t, "/eventos?horas=720&desde=2026-08-01T00:00&hasta=2026-08-31T00:00").Body.String(); !strings.Contains(cuerpo, "viejo-archivado") {
+	if cuerpo := pedir(t, "/events?horas=720&desde=2026-08-01T00:00&hasta=2026-08-31T00:00").Body.String(); !strings.Contains(cuerpo, "viejo-archivado") {
 		t.Error("/eventos tiene que seguir mostrando la historia archivada")
 	}
 }
@@ -574,7 +621,7 @@ func (e espiaIncidentes) ArchivarIncidente(id int64, _ time.Time) error {
 // Los carteles de ayuda se van (pedido del 25/08) y los filtros se aplican
 // solos: no hay botón "buscar" ni "ver" que apretar.
 func TestSinCartelDeAyudaYSinBotonBuscar(t *testing.T) {
-	for _, ruta := range []string{"/logs", "/eventos?horas=720"} {
+	for _, ruta := range []string{"/logs", "/events?horas=720"} {
 		cuerpo := pedir(t, ruta).Body.String()
 		if strings.Contains(cuerpo, "La búsqueda es por palabra completa") ||
 			strings.Contains(cuerpo, "Todo lo que pasó, en orden") {
@@ -630,8 +677,8 @@ func TestLasFechasLlevanDiaMesYAnio(t *testing.T) {
 		t.Error("/logs no muestra la fecha completa (esperaba 09/08/2026 09:00:00)")
 	}
 	// El evento falso es 05:00:31 UTC del 22/08 → 02:00:31 en Buenos Aires.
-	if cuerpo := pedir(t, "/eventos?horas=720").Body.String(); !strings.Contains(cuerpo, "22/08/2026 02:00:31") {
-		t.Error("/eventos no muestra la fecha completa")
+	if cuerpo := pedir(t, "/events?horas=720").Body.String(); !strings.Contains(cuerpo, "22/08/2026 02:00:31") {
+		t.Error("/events no muestra la fecha completa")
 	}
 	// El incidente falso abrió el 09/08.
 	if cuerpo := pedir(t, "/").Body.String(); !strings.Contains(cuerpo, "09/08/2026") {

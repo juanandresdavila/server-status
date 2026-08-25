@@ -52,7 +52,7 @@ func severidadesValidas(ss []string) []string {
 // Es una función pura sobre los tres slices: se testea sin base, que es la
 // misma razón por la que rules declara su propia interfaz Store.
 func armarNovedades(incidentes []model.Incidente, eventos []model.Evento,
-	errores []model.LineaLog, desde, hasta time.Time, mostrar []string) []Novedad {
+	errores []model.LineaLog, desde, hasta time.Time, mostrar []string, idioma string) []Novedad {
 
 	var out []Novedad
 	dentro := func(t time.Time) bool {
@@ -64,15 +64,15 @@ func armarNovedades(incidentes []model.Incidente, eventos []model.Evento,
 		// en uno perdería justo el dato de cuánto duró la cosa.
 		if dentro(i.AbiertoEn) {
 			out = append(out, Novedad{
-				Cuando: i.AbiertoEn, Severidad: i.Severidad, Origen: "incidente",
-				Titulo: "se abrió · " + NombreLegible(i.Sujeto), Detalle: i.Detalle,
+				Cuando: i.AbiertoEn, Severidad: i.Severidad, Origen: tr(idioma, "origen-incidente"),
+				Titulo: tr(idioma, "se-abrio") + " · " + NombreLegible(i.Sujeto, idioma), Detalle: i.Detalle,
 			})
 		}
 		if i.CerradoEn != nil && dentro(*i.CerradoEn) {
 			out = append(out, Novedad{
-				Cuando: *i.CerradoEn, Severidad: "info", Origen: "incidente",
-				Titulo:  "se cerró · " + NombreLegible(i.Sujeto),
-				Detalle: "estuvo mal " + i.CerradoEn.Sub(i.AbiertoEn).Round(time.Second).String(),
+				Cuando: *i.CerradoEn, Severidad: "info", Origen: tr(idioma, "origen-incidente"),
+				Titulo:  tr(idioma, "se-cerro") + " · " + NombreLegible(i.Sujeto, idioma),
+				Detalle: tr(idioma, "estuvo-mal") + " " + i.CerradoEn.Sub(i.AbiertoEn).Round(time.Second).String(),
 			})
 		}
 	}
@@ -80,8 +80,8 @@ func armarNovedades(incidentes []model.Incidente, eventos []model.Evento,
 	for _, e := range eventos {
 		if dentro(e.OcurridoEn) {
 			out = append(out, Novedad{
-				Cuando: e.OcurridoEn, Severidad: e.Severidad, Origen: "evento",
-				Titulo: tituloDeEvento(e), Detalle: e.Detalle,
+				Cuando: e.OcurridoEn, Severidad: e.Severidad, Origen: tr(idioma, "origen-evento"),
+				Titulo: tituloDeEvento(e, idioma), Detalle: e.Detalle,
 			})
 		}
 	}
@@ -89,7 +89,7 @@ func armarNovedades(incidentes []model.Incidente, eventos []model.Evento,
 	for _, l := range errores {
 		if dentro(l.TS) {
 			out = append(out, Novedad{
-				Cuando: l.TS, Severidad: "warning", Origen: "log",
+				Cuando: l.TS, Severidad: "warning", Origen: tr(idioma, "origen-log"),
 				Titulo: l.Container, Detalle: l.Linea,
 			})
 		}
@@ -113,37 +113,26 @@ func armarNovedades(incidentes []model.Incidente, eventos []model.Evento,
 	return filtradas
 }
 
-func tituloDeEvento(e model.Evento) string {
-	switch e.Tipo {
-	case "reboot":
-		return "el servidor se reinició"
-	case "container_restart":
-		return "containers reiniciados"
-	case "monitor_start":
-		return "el monitor arrancó"
-	}
-	return e.Tipo
+// tituloDeEvento traduce el tipo del evento: la clave de textos ES el tipo
+// ("reboot", "container_restart", "monitor_start"), y un tipo desconocido
+// vuelve tal cual — visible, no desaparecido.
+func tituloDeEvento(e model.Evento, idioma string) string {
+	return tr(idioma, e.Tipo)
 }
 
-// NombreLegible traduce 'host:disk' a 'disco'. Duplica lo que hace
-// notify.NombreDeSujeto a propósito: el paquete web no importa notify, y atar
-// el panel a los textos de los mensajes de Telegram sería atar dos cosas que
-// cambian por razones distintas.
-func NombreLegible(sujeto string) string {
+// NombreLegible traduce 'host:disk' a 'disco'/'disk' según el idioma. Duplica
+// lo que hace notify.NombreDeSujeto a propósito: el paquete web no importa
+// notify, y atar el panel a los textos de los mensajes de Telegram sería atar
+// dos cosas que cambian por razones distintas.
+func NombreLegible(sujeto, idioma string) string {
 	prefijo, resto, ok := cortar(sujeto)
 	if !ok {
 		return sujeto
 	}
 	if prefijo == "host" {
 		switch resto {
-		case "disk":
-			return "disco"
-		case "mem":
-			return "memoria"
-		case "swap":
-			return "swap"
-		case "load":
-			return "carga"
+		case "disk", "mem", "swap", "load":
+			return tr(idioma, "sujeto-"+resto)
 		}
 	}
 	return resto

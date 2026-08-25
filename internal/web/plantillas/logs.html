@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es">
+<html lang="{{ lang }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -49,9 +49,9 @@
 <h1>logs</h1>
 
 <form method="get">
-  <input name="q" value="{{ .Q }}" placeholder="buscar… (probá conex* o error)" autofocus>
+  <input name="q" value="{{ .Q }}" placeholder="{{ t "buscar-ph" }}" autofocus>
   <select name="container">
-    <option value="">todos los containers</option>
+    <option value="">{{ t "todos" }}</option>
     {{ range .Containers }}
     <option value="{{ . }}" {{ if eq . $.Container }}selected{{ end }}>{{ . }}</option>
     {{ end }}
@@ -66,13 +66,13 @@
   </span>
   <select name="horas">
     {{ range .Rangos }}
-    <option value="{{ .Valor }}" {{ if eq .Valor $.Horas }}selected{{ end }}>{{ .Texto }}</option>
+    <option value="{{ . }}" {{ if eq . $.Horas }}selected{{ end }}>{{ t (printf "rango-%d" .) }}</option>
     {{ end }}
   </select>
   <span class="rango">
-    <label for="desde">desde</label>
+    <label for="desde">{{ t "desde" }}</label>
     <input type="datetime-local" id="desde" name="desde" value="{{ .Ventana.ValorDesde }}">
-    <label for="hasta">hasta</label>
+    <label for="hasta">{{ t "hasta" }}</label>
     <input type="datetime-local" id="hasta" name="hasta" value="{{ .Ventana.ValorHasta }}">
   </span>
   {{/* El botón oculto va PRIMERO: sin él, Enter en el campo de texto dispara
@@ -81,7 +81,7 @@
   <button hidden tabindex="-1" aria-hidden="true"></button>
   {{/* Mismo form, otro destino: el export baja como archivo lo que la vista
        muestra, con los mismos filtros, sin duplicar controles. */}}
-  <button type="submit" formaction="/logs/export">exportar</button>
+  <button type="submit" formaction="/logs/export">{{ t "exportar" }}</button>
 </form>
 
 {{ if .Truncado }}<div class="aviso">{{ .Truncado }}</div>{{ end }}
@@ -90,7 +90,7 @@
 {{- range .Lineas }}
 <div class="l lv-{{ .Nivel }}"><span class="t">{{ (en .TS $.Zona).Format "02/01/2006 15:04:05" }}</span><span class="n n-{{ .Nivel }}">{{ .Nivel }}</span><span class="c">{{ .Container }}</span><span class="m">{{ .Linea }}</span></div>
 {{- else }}
-<div class="vacio">sin resultados</div>
+<div class="vacio">{{ t "sin-resultados" }}</div>
 {{- end }}
 </pre>
 <script>

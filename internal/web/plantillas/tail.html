@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es">
+<html lang="{{ lang }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -19,15 +19,15 @@
 {{ template "nav" .Nav }}
 
 <h1>tail · {{ .Container }}</h1>
-<div id="estado">conectando…</div>
+<div id="estado">{{ t "conectando" }}</div>
 <pre id="salida"></pre>
 <script>
   const salida = document.getElementById('salida')
   const estado = document.getElementById('estado')
   const es = new EventSource('/api/tail?container=' + encodeURIComponent({{ .Container }}))
 
-  es.onopen = () => estado.textContent = 'en vivo'
-  es.onerror = () => estado.textContent = 'desconectado — recargá para reintentar'
+  es.onopen = () => estado.textContent = '{{ t "en-vivo" }}'
+  es.onerror = () => estado.textContent = '{{ t "desconectado" }}'
   es.addEventListener('linea', e => {
     // Pegado al fondo solo si el usuario ya estaba abajo: si subió a leer
     // algo, un auto-scroll se lo arrebata.
