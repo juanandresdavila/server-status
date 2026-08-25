@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/juanandresdavila/server-status/internal/logs"
 	"github.com/juanandresdavila/server-status/internal/model"
 
 	_ "modernc.org/sqlite" // driver puro Go: sin cgo, invariante 7 del spec
@@ -716,30 +717,13 @@ func (s *Store) InsertLogs(ls []model.LineaLog) error {
 	return tx.Commit()
 }
 
-// nivelesDesde arma el conjunto de niveles que pasan un mínimo dado.
-//
-// Se filtra por IN y no por una comparación de orden porque en SQL el nivel es
-// texto: 'ERROR' < 'INFO' alfabéticamente, que es exactamente al revés de lo
-// que hace falta.
-func nivelesDesde(minimo string) []any {
-	orden := []string{"TRACE", "INFO", "WARN", "ERROR"}
-	desde := 1 // INFO es el default de la vista
-	for i, n := range orden {
-		if n == strings.ToUpper(strings.TrimSpace(minimo)) {
-			desde = i
-			break
-		}
-	}
-	out := make([]any, 0, len(orden)-desde)
-	for _, n := range orden[desde:] {
-		out = append(out, n)
-	}
-	return out
-}
-
 // BuscarLogs devuelve las líneas más nuevas primero. Con texto vacío no usa
 // MATCH: devuelve las últimas, que es lo que muestra el panel al entrar.
-func (s *Store) BuscarLogs(texto, container, nivelMinimo string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+//
+// niveles es un CONJUNTO, no un mínimo: el filtro de la vista es un toggle por
+// ítem y "TRACE y ERROR sin el medio" tiene que poder pedirse. La validación
+// vive en logs.Conjunto; con nada válido cae al default de la vista.
+func (s *Store) BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
 	// COALESCE porque una fila insertada antes de la migración 9 todavía puede
 	// no tener nivel si el backfill no llegó: se la trata como INFO en vez de
 	// hacerla desaparecer.
@@ -756,9 +740,14 @@ func (s *Store) BuscarLogs(texto, container, nivelMinimo string, desde, hasta ti
 		q += ` AND l.container = ?`
 		args = append(args, container)
 	}
-	if niveles := nivelesDesde(nivelMinimo); len(niveles) < 4 {
-		q += ` AND COALESCE(n.nivel, 'INFO') IN (?` + strings.Repeat(",?", len(niveles)-1) + `)`
-		args = append(args, niveles...)
+	// Se filtra por IN y no por una comparación de orden porque en SQL el
+	// nivel es texto: 'ERROR' < 'INFO' alfabéticamente, al revés de lo que
+	// hace falta. Con los cuatro niveles el filtro no filtra nada y se omite.
+	if conjunto := logs.Conjunto(niveles); len(conjunto) < 4 {
+		q += ` AND COALESCE(n.nivel, 'INFO') IN (?` + strings.Repeat(",?", len(conjunto)-1) + `)`
+		for _, n := range conjunto {
+			args = append(args, string(n))
+		}
 	}
 	if strings.TrimSpace(texto) != "" {
 		q += ` AND logs MATCH ?`

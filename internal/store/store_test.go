@@ -644,7 +644,7 @@ func TestInsertLogsYBusquedaPorTexto(t *testing.T) {
 		t.Fatalf("InsertLogs: %v", err)
 	}
 
-	got, err := s.BuscarLogs("ERROR", "", "TRACE", time.Time{}, base.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("ERROR", "", []string{"TRACE", "INFO", "WARN", "ERROR"}, time.Time{}, base.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatalf("BuscarLogs: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestBusquedaPorPrefijo(t *testing.T) {
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	s.InsertLogs(lineas(base, "x", "conexion rechazada"))
 
-	got, err := s.BuscarLogs("conex*", "", "TRACE", time.Time{}, base.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("conex*", "", []string{"TRACE", "INFO", "WARN", "ERROR"}, time.Time{}, base.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -676,7 +676,7 @@ func TestBusquedaFiltraPorContainer(t *testing.T) {
 	s.InsertLogs(lineas(base, "uno", "mismo texto"))
 	s.InsertLogs(lineas(base, "dos", "mismo texto"))
 
-	got, err := s.BuscarLogs("texto", "uno", "TRACE", time.Time{}, base.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("texto", "uno", []string{"TRACE", "INFO", "WARN", "ERROR"}, time.Time{}, base.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +693,7 @@ func TestBuscarConTextoRaroNoExplota(t *testing.T) {
 	s.InsertLogs(lineas(base, "x", "algo"))
 
 	for _, raro := range []string{"(", `"`, "AND", "*", "a OR", "^%$#", "NEAR(", ")"} {
-		if _, err := s.BuscarLogs(raro, "", "TRACE", time.Time{}, base.Add(time.Hour), 50); err != nil {
+		if _, err := s.BuscarLogs(raro, "", []string{"TRACE", "INFO", "WARN", "ERROR"}, time.Time{}, base.Add(time.Hour), 50); err != nil {
 			t.Errorf("BuscarLogs(%q) devolvió error: %v", raro, err)
 		}
 	}
@@ -705,7 +705,7 @@ func TestSinTextoDevuelveLasUltimas(t *testing.T) {
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	s.InsertLogs(lineas(base, "x", "una", "dos", "tres"))
 
-	got, err := s.BuscarLogs("", "", "TRACE", time.Time{}, base.Add(time.Hour), 2)
+	got, err := s.BuscarLogs("", "", []string{"TRACE", "INFO", "WARN", "ERROR"}, time.Time{}, base.Add(time.Hour), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -753,7 +753,7 @@ func TestRetencionBorraLoViejoYDejaLoNuevo(t *testing.T) {
 		t.Fatalf("BorrarLogsAnterioresA: %v", err)
 	}
 
-	got, err := s.BuscarLogs("", "", "TRACE", time.Time{}, ahora.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("", "", []string{"TRACE", "INFO", "WARN", "ERROR"}, time.Time{}, ahora.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -859,7 +859,7 @@ func TestVacuumIntoDejaUnaCopiaLegibleYCompleta(t *testing.T) {
 	if len(got) != 20 {
 		t.Errorf("la copia tiene %d muestras, el original tenía 20", len(got))
 	}
-	ls, err := copia.BuscarLogs("prueba", "", "TRACE", time.Time{}, base.Add(time.Hour), 10)
+	ls, err := copia.BuscarLogs("prueba", "", []string{"TRACE", "INFO", "WARN", "ERROR"}, time.Time{}, base.Add(time.Hour), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -894,7 +894,7 @@ func conNivel(base time.Time, cont string, pares ...string) []model.LineaLog {
 	return out
 }
 
-func TestBuscarLogsFiltraPorNivelMinimo(t *testing.T) {
+func TestBuscarLogsFiltraPorConjuntoDeNiveles(t *testing.T) {
 	s := abrir(t)
 	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 
@@ -907,21 +907,23 @@ func TestBuscarLogsFiltraPorNivelMinimo(t *testing.T) {
 	}
 
 	casos := []struct {
-		minimo string
-		quiero int
+		niveles []string
+		quiero  int
 	}{
-		{"TRACE", 4},
-		{"INFO", 3},
-		{"WARN", 2},
-		{"ERROR", 1},
+		{[]string{"TRACE", "INFO", "WARN", "ERROR"}, 4},
+		{nil, 3}, // sin elegir nada: el default de la vista, todo menos TRACE
+		{[]string{"WARN", "ERROR"}, 2},
+		{[]string{"ERROR"}, 1},
+		// Lo que el mínimo no podía decir: los extremos sin el medio.
+		{[]string{"TRACE", "ERROR"}, 2},
 	}
 	for _, c := range casos {
-		got, err := s.BuscarLogs("", "", c.minimo, time.Time{}, base.Add(time.Hour), 50)
+		got, err := s.BuscarLogs("", "", c.niveles, time.Time{}, base.Add(time.Hour), 50)
 		if err != nil {
-			t.Fatalf("BuscarLogs(%s): %v", c.minimo, err)
+			t.Fatalf("BuscarLogs(%v): %v", c.niveles, err)
 		}
 		if len(got) != c.quiero {
-			t.Errorf("mínimo %s: %d líneas, quería %d", c.minimo, len(got), c.quiero)
+			t.Errorf("niveles %v: %d líneas, quería %d", c.niveles, len(got), c.quiero)
 		}
 	}
 }
@@ -931,7 +933,7 @@ func TestBuscarLogsDevuelveElNivel(t *testing.T) {
 	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	s.InsertLogs(conNivel(base, "x", "se cayo", "ERROR"))
 
-	got, err := s.BuscarLogs("", "", "TRACE", time.Time{}, base.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("", "", []string{"TRACE", "INFO", "WARN", "ERROR"}, time.Time{}, base.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -947,7 +949,7 @@ func TestLineaSinNivelCuentaComoInfo(t *testing.T) {
 	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	s.InsertLogs(lineas(base, "x", "sin nivel"))
 
-	got, err := s.BuscarLogs("", "", "INFO", time.Time{}, base.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("", "", nil, time.Time{}, base.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1017,7 +1019,7 @@ func TestBackfillClasificaLasFilasViejas(t *testing.T) {
 		t.Errorf("procesó %d filas, quería 5", total)
 	}
 
-	got, err := s.BuscarLogs("", "", "ERROR", time.Time{}, base.Add(time.Hour), 50)
+	got, err := s.BuscarLogs("", "", []string{"ERROR"}, time.Time{}, base.Add(time.Hour), 50)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package web_test
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +72,7 @@ func (d datosFalsos) SerieHost(desde, hasta time.Time) ([]model.HostSample, erro
 	return out, nil
 }
 
-func (datosFalsos) BuscarLogs(texto, container, nivelMinimo string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+func (datosFalsos) BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
 	return []model.LineaLog{{
 		TS:        time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
 		Container: "comm-tool", Stream: "stderr", Linea: "ERROR conexion rechazada",
@@ -462,13 +463,42 @@ func TestLoQueSeMuestraNoSaleDeTimeLocal(t *testing.T) {
 	}
 }
 
+// El filtro es un toggle por ítem, no un "mínimo": WARN apagado con ERROR
+// prendido no se puede decir con un piso.
+func TestElFiltroDeNivelEsPorConjunto(t *testing.T) {
+	var visto []string
+	h := web.NuevoPanel(espiaNiveles{cb: func(ns []string) { visto = ns }}, zonaDePrueba)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs?nivel=TRACE&nivel=ERROR", nil))
+
+	if !reflect.DeepEqual(visto, []string{"TRACE", "ERROR"}) {
+		t.Errorf("niveles = %v, quería [TRACE ERROR]", visto)
+	}
+	// Y la vista pinta los cuatro pills con los elegidos marcados.
+	cuerpo := w.Body.String()
+	if !strings.Contains(cuerpo, `value="TRACE" checked`) || strings.Contains(cuerpo, `value="INFO" checked`) {
+		t.Error("los toggles no reflejan la selección")
+	}
+}
+
+// espiaNiveles captura el conjunto de niveles pedido al store.
+type espiaNiveles struct {
+	datosFalsos
+	cb func([]string)
+}
+
+func (e espiaNiveles) BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+	e.cb(niveles)
+	return e.datosFalsos.BuscarLogs(texto, container, niveles, desde, hasta, limite)
+}
+
 // espia captura el rango con el que se consultó, y delega el resto en datosFalsos.
 type espia struct {
 	datosFalsos
 	cb func(desde, hasta time.Time)
 }
 
-func (e espia) BuscarLogs(texto, container, nivel string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+func (e espia) BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
 	e.cb(desde, hasta)
-	return e.datosFalsos.BuscarLogs(texto, container, nivel, desde, hasta, limite)
+	return e.datosFalsos.BuscarLogs(texto, container, niveles, desde, hasta, limite)
 }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/juanandresdavila/server-status/internal/logs"
@@ -18,7 +19,7 @@ import (
 // Declarada acá y no importada de store, por la misma razón que en rules:
 // deja el panel testeable sin base.
 type Datos interface {
-	BuscarLogs(texto, container, nivelMinimo string, desde, hasta time.Time, limite int) ([]model.LineaLog, error)
+	BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error)
 	UltimasHostSamples(n int) ([]model.HostSample, error)
 	UltimoEstadoContainers() ([]model.ContainerSample, error)
 	UltimoEstadoProbes() ([]model.ProbeResult, error)
@@ -121,9 +122,9 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 	mux.HandleFunc("GET /logs/export", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		v := ventanaDe(r, time.Now(), zona)
-		nivel := nivelDe(r)
+		niveles := nivelesDe(r)
 
-		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"), nivel,
+		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"), niveles,
 			v.Desde, v.Hasta, topeExport)
 		if err != nil {
 			http.Error(w, "no se pudieron buscar los logs", http.StatusInternalServerError)
@@ -142,8 +143,9 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		// qué ventana cubre se lee como si cubriera la que uno pidió. Este
 		// export salió una vez con "24h" en el nombre cubriendo 4 h 54 m, y el
 		// reinicio que se buscaba estaba en las horas que faltaban.
-		fmt.Fprintf(w, "# pedido: %s → %s (nivel mínimo %s)\n",
-			v.en(v.Desde).Format(time.DateTime), v.en(v.Hasta).Format(time.DateTime), nivel)
+		fmt.Fprintf(w, "# pedido: %s → %s (niveles %s)\n",
+			v.en(v.Desde).Format(time.DateTime), v.en(v.Hasta).Format(time.DateTime),
+			strings.Join(niveles, ","))
 		if len(lineas) == topeExport {
 			fmt.Fprintf(w, "# TRUNCADO en %d líneas: el archivo cubre desde %s, no desde lo pedido.\n",
 				topeExport, v.en(lineas[len(lineas)-1].TS).Format(time.DateTime))
@@ -163,9 +165,9 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 	mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		v := ventanaDe(r, time.Now(), zona)
-		nivel := nivelDe(r)
+		niveles := nivelesDe(r)
 
-		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"), nivel,
+		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"), niveles,
 			v.Desde, v.Hasta, topeVista)
 		if err != nil {
 			http.Error(w, "no se pudieron buscar los logs", http.StatusInternalServerError)
@@ -199,13 +201,12 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			Nav          nav
 			Zona         *time.Location
 			Q, Container string
-			Nivel        string
 			Horas        int
 			Ventana      Ventana
 			Truncado     string
 			Containers   []string
 			Lineas       []model.LineaLog
-			Niveles      []struct{ Valor, Texto string }
+			Niveles      []toggleNivel
 			Rangos       []struct {
 				Valor int
 				Texto string
@@ -213,9 +214,9 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		}{
 			Nav:  nav{Activo: "logs", Horas: v.Horas, Container: q.Get("container")},
 			Zona: zona,
-			Q:    q.Get("q"), Container: q.Get("container"), Nivel: nivel,
+			Q:    q.Get("q"), Container: q.Get("container"),
 			Horas: v.Horas, Ventana: v, Truncado: truncado,
-			Containers: nombres, Lineas: lineas, Niveles: niveles, Rangos: rangos,
+			Containers: nombres, Lineas: lineas, Niveles: togglesDe(niveles), Rangos: rangos,
 		})
 		if errPlantilla != nil {
 			// El cuerpo ya se empezó a escribir, así que no se puede devolver un
@@ -245,7 +246,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		}
 		// Solo ERROR: un WARN por container y por minuto llenaría la línea de
 		// tiempo y la volvería tan inútil como el visor de logs sin filtro.
-		errores, err := d.BuscarLogs("", "", "ERROR", v.Desde, v.Hasta, 200)
+		errores, err := d.BuscarLogs("", "", []string{"ERROR"}, v.Desde, v.Hasta, 200)
 		if err != nil {
 			http.Error(w, "no se pudieron leer los errores", http.StatusInternalServerError)
 			return
@@ -433,12 +434,24 @@ func (v Ventana) ValorHasta() string {
 	return v.en(v.Hasta).Format(formLocal)
 }
 
-// niveles son las opciones del filtro, del que más muestra al que menos.
-var niveles = []struct{ Valor, Texto string }{
-	{"TRACE", "todo (con TRACE)"},
-	{"INFO", "info y peor"},
-	{"WARN", "solo warnings y errores"},
-	{"ERROR", "solo errores"},
+// toggleNivel es un pill del filtro: el nivel y si está prendido.
+type toggleNivel struct {
+	Valor  string
+	Activo bool
+}
+
+// togglesDe arma los cuatro pills con los elegidos marcados: la vista siempre
+// muestra el filtro completo, no solo lo que quedó prendido.
+func togglesDe(elegidos []string) []toggleNivel {
+	activo := map[string]bool{}
+	for _, n := range elegidos {
+		activo[n] = true
+	}
+	out := make([]toggleNivel, 0, 4)
+	for _, n := range []string{"TRACE", "INFO", "WARN", "ERROR"} {
+		out = append(out, toggleNivel{Valor: n, Activo: activo[n]})
+	}
+	return out
 }
 
 // horasDe acota el rango. El parámetro es entrada de afuera aunque el panel
@@ -458,11 +471,16 @@ const (
 	topeExport = 10000
 )
 
-// nivelDe lee el filtro de nivel. Cualquier basura cae a INFO, que es el
-// default de la vista: es el que hace desaparecer el ruido sin esconder nada
-// que importe.
-func nivelDe(r *http.Request) string {
-	return string(logs.NivelValido(r.URL.Query().Get("nivel")))
+// nivelesDe lee los toggles de nivel. Param repetido (?nivel=WARN&nivel=ERROR);
+// sin ninguno vale el default de la vista, que es todo menos TRACE — el que
+// hace desaparecer el ruido sin esconder nada que importe.
+func nivelesDe(r *http.Request) []string {
+	conjunto := logs.Conjunto(r.URL.Query()["nivel"])
+	out := make([]string, len(conjunto))
+	for i, n := range conjunto {
+		out[i] = string(n)
+	}
+	return out
 }
 
 // nombreExport arma un nombre que dice qué ventana cubre. El viejo decía
