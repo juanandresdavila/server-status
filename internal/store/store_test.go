@@ -69,8 +69,8 @@ func TestUltimaMigracionAplicada(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 10 {
-		t.Errorf("versión = %d, quería 10", v)
+	if v != 11 {
+		t.Errorf("versión = %d, quería 11", v)
 	}
 }
 
@@ -256,6 +256,51 @@ func TestAbrirYCerrarIncidente(t *testing.T) {
 	}
 	if len(abiertos) != 0 {
 		t.Errorf("quedaron %d abiertos después de cerrar", len(abiertos))
+	}
+}
+
+// Archivar saca el incidente del panel sin borrarlo, y exige que esté cerrado:
+// archivar uno abierto lo escondería mientras sigue roto.
+func TestArchivarIncidente(t *testing.T) {
+	s := abrir(t)
+	ts := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+
+	id, err := s.AbrirIncidente(model.Incidente{
+		Sujeto: "service:x", Tipo: "down", Severidad: "critical",
+		AbiertoEn: ts, Detalle: "HTTP 502",
+	})
+	if err != nil {
+		t.Fatalf("AbrirIncidente: %v", err)
+	}
+
+	// Abierto: archivar es un no-op, no un error.
+	if err := s.ArchivarIncidente(id, ts.Add(time.Minute)); err != nil {
+		t.Fatalf("ArchivarIncidente sobre abierto: %v", err)
+	}
+	is, err := s.UltimosIncidentes(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(is) != 1 || is[0].ArchivadoEn != nil {
+		t.Fatalf("un incidente abierto no tiene que poder archivarse: %+v", is)
+	}
+
+	// Cerrado sí se archiva, y la marca vuelve al releer.
+	if err := s.CerrarIncidente(id, ts.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ArchivarIncidente(id, ts.Add(20*time.Minute)); err != nil {
+		t.Fatalf("ArchivarIncidente: %v", err)
+	}
+	is, err = s.UltimosIncidentes(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(is) != 1 || is[0].ArchivadoEn == nil {
+		t.Fatalf("el incidente cerrado tenía que quedar archivado: %+v", is)
+	}
+	if got := *is[0].ArchivadoEn; !got.Equal(ts.Add(20 * time.Minute)) {
+		t.Errorf("ArchivadoEn = %v, quería %v", got, ts.Add(20*time.Minute))
 	}
 }
 

@@ -39,7 +39,10 @@ type Incidente struct {
 	Severidad string // critical | warning
 	AbiertoEn time.Time
 	CerradoEn *time.Time // nil mientras siga abierto
-	Detalle   string
+	// ArchivadoEn es "ya lo vi": el panel lo esconde, la historia lo conserva.
+	// Solo un incidente cerrado puede estar archivado.
+	ArchivadoEn *time.Time
+	Detalle     string
 }
 
 // Aviso es un mensaje que hay que mandar. El DeliveryID es determinístico:
