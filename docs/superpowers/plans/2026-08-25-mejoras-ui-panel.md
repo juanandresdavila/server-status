@@ -65,7 +65,7 @@ SQLite vía modernc, sin dependencias nuevas.
 - Modify: `internal/collector/docker/containers.go` (cpuPct)
 - Test: `internal/collector/docker/docker_test.go`
 
-- [ ] **Step 1: Ajustar los tests que afirman la escala vieja**
+- [x] **Step 1: Ajustar los tests que afirman la escala vieja**
 
 En `docker_test.go`, los asserts de 60 pasan a 10 (deltaCPU=1000,
 deltaSys=10000 → 10 % de la máquina, ya sin multiplicar por los 6 cores):
@@ -81,11 +81,11 @@ if !casiIgual(got.CPUPct, 10) {
 
 (igual en `TestRecolectarJuntaTodoYLimitaLaConcurrencia`: `casiIgual(uno.CPUPct, 10)`)
 
-- [ ] **Step 2: Correr y ver fallar**
+- [x] **Step 2: Correr y ver fallar**
 
 `go test ./internal/collector/docker/ -run TestStats -v` → FAIL (da 60).
 
-- [ ] **Step 3: Corregir la fórmula**
+- [x] **Step 3: Corregir la fórmula**
 
 ```go
 // cpuPct devuelve el uso como % de la CAPACIDAD TOTAL de la máquina, no de un
@@ -105,8 +105,8 @@ func cpuPct(s statsAPI) float64 {
 `OnlineCPUs` queda en el struct (documenta el gotcha) pero ya no se usa en la
 cuenta.
 
-- [ ] **Step 4: Verificar** — `go test ./internal/collector/docker/` → PASS
-- [ ] **Step 5: Commit** — `fix(collector): el % de CPU de un container es sobre la máquina, no sobre un core`
+- [x] **Step 4: Verificar** — `go test ./internal/collector/docker/` → PASS
+- [x] **Step 5: Commit** — `fix(collector): el % de CPU de un container es sobre la máquina, no sobre un core`
 
 ### Task 2: archived_at en incidents + ArchivarIncidente
 
@@ -115,7 +115,7 @@ cuenta.
 - Modify: `internal/model/model.go` (campo ArchivadoEn)
 - Test: `internal/store/store_test.go`
 
-- [ ] **Step 1: Tests primero**
+- [x] **Step 1: Tests primero**
 
 `TestUltimaMigracionAplicada`: 10 → 11. Y el ciclo de archivo:
 
@@ -158,8 +158,8 @@ func TestArchivarIncidente(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Ver fallar** — `go test ./internal/store/ -run 'Archivar|UltimaMigracion' -v`
-- [ ] **Step 3: Implementar**
+- [x] **Step 2: Ver fallar** — `go test ./internal/store/ -run 'Archivar|UltimaMigracion' -v`
+- [x] **Step 3: Implementar**
 
 Migración nueva al final del slice:
 
@@ -187,8 +187,8 @@ func (s *Store) ArchivarIncidente(id int64, cuando time.Time) error {
 }
 ```
 
-- [ ] **Step 4: Verificar** — `go test ./internal/store/` → PASS
-- [ ] **Step 5: Commit** — `feat(store): archived_at en incidents y ArchivarIncidente`
+- [x] **Step 4: Verificar** — `go test ./internal/store/` → PASS
+- [x] **Step 5: Commit** — `feat(store): archived_at en incidents y ArchivarIncidente`
 
 ### Task 3: BuscarLogs por conjunto de niveles
 
@@ -199,7 +199,7 @@ func (s *Store) ArchivarIncidente(id int64, cuando time.Time) error {
 - Modify: `internal/web/panel.go` (interfaz Datos)
 - Tests: `internal/logs/nivel_test.go`, `internal/store/store_test.go`
 
-- [ ] **Step 1: Test de logs.Conjunto**
+- [x] **Step 1: Test de logs.Conjunto**
 
 ```go
 // Conjunto valida lo que viene de la query string: filtra basura, dedup, y con
@@ -223,7 +223,7 @@ func TestConjunto(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implementar en nivel.go**
+- [x] **Step 2: Implementar en nivel.go**
 
 ```go
 // Conjunto convierte los valores repetidos de una query string (?nivel=WARN&
@@ -252,7 +252,7 @@ func Conjunto(ss []string) []Nivel {
 }
 ```
 
-- [ ] **Step 3: Cambiar la firma en el store**
+- [x] **Step 3: Cambiar la firma en el store**
 
 `BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int)`.
 Adentro, `nivelesDesde` se reemplaza por `logs.Conjunto` (el store ya puede
@@ -270,7 +270,7 @@ if conjunto := logs.Conjunto(niveles); len(conjunto) < 4 {
 Actualizar los tests del store que llamaban con string, y el test de
 `nivelesDesde` si existe (borrarlo: la lógica vive en logs.Conjunto).
 
-- [ ] **Step 4: Propagar la firma**
+- [x] **Step 4: Propagar la firma**
 
 - `internal/comandos/comandos.go`: interfaz `BuscarLogs(..., niveles []string, ...)`;
   la llamada del /logs del bot pasa `[]string{"INFO", "WARN", "ERROR"}` (mismo
@@ -279,8 +279,8 @@ Actualizar los tests del store que llamaban con string, y el test de
   export, /eventos que pedía "ERROR") pasan slices. Los dobles de test
   (`datosFalsos`, `espia`) cambian de firma.
 
-- [ ] **Step 5: Verificar** — `go test ./...` (suelto, sin pipes) → PASS
-- [ ] **Step 6: Commit** — `feat(store): BuscarLogs filtra por conjunto de niveles, no por mínimo`
+- [x] **Step 5: Verificar** — `go test ./...` (suelto, sin pipes) → PASS
+- [x] **Step 6: Commit** — `feat(store): BuscarLogs filtra por conjunto de niveles, no por mínimo`
 
 ### Task 4: Fechas completas DD/MM/YYYY
 
@@ -288,7 +288,7 @@ Actualizar los tests del store que llamaban con string, y el test de
 - Modify: `internal/web/panel.go` (func hora), `plantillas/logs.html`, `plantillas/eventos.html`
 - Test: `internal/web/panel_test.go`
 
-- [ ] **Step 1: Test**
+- [x] **Step 1: Test**
 
 ```go
 // La hora sola obliga a adivinar el día: con 30 días de rango, "02:00:42"
@@ -310,13 +310,13 @@ func TestLasFechasLlevanDiaMesYAnio(t *testing.T) {
 tarea 9 la ruta ya es /events — si esta tarea corre antes, usar /eventos y
 ajustar al renombrar)
 
-- [ ] **Step 2: Implementar** — tres formatos:
+- [x] **Step 2: Implementar** — tres formatos:
   - `panel.go` func `hora`: `"02/01 15:04"` → `"02/01/2006 15:04"`
   - `logs.html`: `.Format "15:04:05"` → `.Format "02/01/2006 15:04:05"`, y la
     grilla `.l` pasa de `5.5rem` a `10rem` en la primera columna
   - `eventos.html`: `.Format "02/01 15:04:05"` → `.Format "02/01/2006 15:04:05"`
-- [ ] **Step 3: Verificar** — `go test ./internal/web/` → PASS
-- [ ] **Step 4: Commit** — `feat(web): fecha completa DD/MM/YYYY junto a cada hora`
+- [x] **Step 3: Verificar** — `go test ./internal/web/` → PASS
+- [x] **Step 4: Commit** — `feat(web): fecha completa DD/MM/YYYY junto a cada hora`
 
 ### Task 5: Orden por defecto por estado
 
@@ -324,7 +324,7 @@ ajustar al renombrar)
 - Modify: `internal/web/panel.go` (handler `GET /{$}`)
 - Test: `internal/web/panel_test.go`
 
-- [ ] **Step 1: Test** (a `datosFalsos` se le agregan filas para que el orden
+- [x] **Step 1: Test** (a `datosFalsos` se le agregan filas para que el orden
   se vea: un probe OK lento, un container exited y uno unhealthy)
 
 ```go
@@ -351,7 +351,7 @@ func TestServiciosYContainersOrdenanPorEstado(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implementar** en el handler, después de leer probes y containers:
+- [x] **Step 2: Implementar** en el handler, después de leer probes y containers:
 
 ```go
 // Lo roto arriba, que es para lo que uno abre el panel; entre lo sano, el
@@ -374,7 +374,7 @@ sort.SliceStable(v.Containers, func(i, j int) bool {
 })
 ```
 
-- [ ] **Step 3: Verificar y commit** — `feat(web): servicios y containers ordenados por estado por defecto`
+- [x] **Step 3: Verificar y commit** — `feat(web): servicios y containers ordenados por estado por defecto`
 
 ### Task 6: Toggles por ítem para nivel y severidad
 
@@ -384,7 +384,7 @@ sort.SliceStable(v.Containers, func(i, j int) bool {
 - Modify: `plantillas/logs.html`, `plantillas/eventos.html`
 - Test: `internal/web/panel_test.go`
 
-- [ ] **Step 1: Tests**
+- [x] **Step 1: Tests**
 
 ```go
 // El filtro es un toggle por ítem, no un "mínimo": WARN apagado con ERROR
@@ -416,7 +416,7 @@ func TestVistaEventosFiltraPorConjunto(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implementar**
+- [x] **Step 2: Implementar**
 
 `panel.go`:
 
@@ -473,7 +473,7 @@ pills de checkbox:
 
 con CSS de pill (input oculto, `:checked + span` con borde y color).
 
-- [ ] **Step 3: Verificar y commit** — `feat(web): filtros de nivel y severidad como toggles por ítem`
+- [x] **Step 3: Verificar y commit** — `feat(web): filtros de nivel y severidad como toggles por ítem`
 
 ### Task 7: Sin carteles de ayuda y filtros que se aplican solos
 
@@ -481,7 +481,7 @@ con CSS de pill (input oculto, `:checked + span` con borde y color).
 - Modify: `plantillas/logs.html`, `plantillas/eventos.html`
 - Test: `internal/web/panel_test.go`
 
-- [ ] **Step 1: Test**
+- [x] **Step 1: Test**
 
 ```go
 // Los carteles de ayuda se van (pedido del 25/08) y los filtros se aplican
@@ -503,7 +503,7 @@ func TestSinCartelDeAyudaYSinBotonBuscar(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implementar**
+- [x] **Step 2: Implementar**
 
 - Borrar los `<div class="ayuda">` de logs.html y eventos.html (y su CSS).
 - Sacar `<button type="submit">buscar</button>` y `>ver</button>`. En logs.html
@@ -530,7 +530,7 @@ func TestSinCartelDeAyudaYSinBotonBuscar(t *testing.T) {
 </script>
 ```
 
-- [ ] **Step 3: Verificar y commit** — `feat(web): filtros que se aplican solos y sin carteles de ayuda`
+- [x] **Step 3: Verificar y commit** — `feat(web): filtros que se aplican solos y sin carteles de ayuda`
 
 ### Task 8: Resolver y archivar incidentes desde el panel
 
@@ -539,7 +539,7 @@ func TestSinCartelDeAyudaYSinBotonBuscar(t *testing.T) {
 - Modify: `plantillas/panel.html` (columna de acciones)
 - Test: `internal/web/panel_test.go`
 
-- [ ] **Step 1: Tests**
+- [x] **Step 1: Tests**
 
 ```go
 // Resolver cierra por el mismo camino que el motor (y por la cola derivada,
@@ -571,7 +571,7 @@ func TestLosBotonesDeIncidentes(t *testing.T) { ... "/" contiene
     /incidents/1/resolve para el abierto y /incidents/2/archive para el cerrado ... }
 ```
 
-- [ ] **Step 2: Implementar**
+- [x] **Step 2: Implementar**
 
 Interfaz `Datos` suma:
 
@@ -618,7 +618,7 @@ mux.HandleFunc("POST /incidents/{id}/resolve", func(w http.ResponseWriter, r *ht
 (hasta la tarea 9, los textos van literales "resolver"/"archivar"; la 9 los
 pasa por `t`)
 
-- [ ] **Step 3: Verificar y commit** — `feat(web): resolver y archivar incidentes desde el panel`
+- [x] **Step 3: Verificar y commit** — `feat(web): resolver y archivar incidentes desde el panel`
 
 ### Task 9: Panel bilingüe y ruta /events
 
@@ -629,7 +629,7 @@ pasa por `t`)
 - Modify: las 5 plantillas (todo texto visible pasa por `{{ t "clave" }}`)
 - Test: `internal/web/panel_test.go`
 
-- [ ] **Step 1: Tests**
+- [x] **Step 1: Tests**
 
 ```go
 // El panel habla español por defecto; ?lang=en lo cambia y lo recuerda en una
@@ -665,7 +665,7 @@ func TestEventosRedirigeAEvents(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: idiomas.go completo**
+- [x] **Step 2: idiomas.go completo**
 
 ```go
 package web
@@ -712,7 +712,7 @@ func idiomaDe(w http.ResponseWriter, r *http.Request) string {
 }
 ```
 
-- [ ] **Step 3: Plantillas por idioma en panel.go**
+- [x] **Step 3: Plantillas por idioma en panel.go**
 
 ```go
 // Un set de plantillas por idioma, parseados al arrancar: t queda cerrada
@@ -740,7 +740,7 @@ Cada handler arranca con `idioma := idiomaDe(w, r)` y usa
 `tr(idioma, ...)`. `armarNovedades`, `tituloDeEvento` y `NombreLegible` reciben
 `idioma`.
 
-- [ ] **Step 4: Rutas**
+- [x] **Step 4: Rutas**
 
 ```go
 mux.HandleFunc("GET /events", ...)      // el handler que era /eventos
@@ -763,12 +763,12 @@ toggle de idioma a la derecha:
 (con `.nav .idioma { margin-left: auto; }` — JS y no href fijo para no perder
 la query actual: q, container, desde/hasta)
 
-- [ ] **Step 5: Pasar todos los textos visibles de las 5 plantillas por `t`**,
+- [x] **Step 5: Pasar todos los textos visibles de las 5 plantillas por `t`**,
   incluidos los títulos de los gráficos en el JS del panel
   (`titulo: '{{ t "g-cpu" }}'`), y `<html lang="{{ lang }}">`. Actualizar los
   tests viejos que referencian `/eventos` a `/events`.
-- [ ] **Step 6: Verificar** — `go test ./...` → PASS. Además `make vet`.
-- [ ] **Step 7: Commit** — `feat(web): panel bilingüe es/en y ruta /events`
+- [x] **Step 6: Verificar** — `go test ./...` → PASS. Además `make vet`.
+- [x] **Step 7: Commit** — `feat(web): panel bilingüe es/en y ruta /events`
 
 ### Task 10: Cierre — main.go, docs y verificación real
 
@@ -778,16 +778,16 @@ la query actual: q, container, desde/hasta)
 - Modify: `CLAUDE.md` (estado + gotcha del cambio de escala de CPU)
 - Test: suite completa
 
-- [ ] **Step 1:** `go build ./...` y `make test` (comandos sueltos, sin pipes)
-- [ ] **Step 2:** Levantar el binario local con una config mínima apuntando a
+- [x] **Step 1:** `go build ./...` y `make test` (comandos sueltos, sin pipes)
+- [x] **Step 2:** Levantar el binario local con una config mínima apuntando a
   una base de prueba y mirar el panel en el navegador (validación visual la
   hace Juan; acá se verifica que renderiza sin panics y que el HTML trae lo
   esperado con curl)
-- [ ] **Step 3:** CLAUDE.md: párrafo de la tanda del 25/08 en "Estado", y en
+- [x] **Step 3:** CLAUDE.md: párrafo de la tanda del 25/08 en "Estado", y en
   gotchas la nota: el `cpu_pct` de `container_samples` anterior al 25/08/2026
   está en escala docker-stats (100 % = un core); desde entonces es % de la
   máquina.
-- [ ] **Step 4: Commit** — `docs: la tanda de UI del 25/08 en CLAUDE.md`
+- [x] **Step 4: Commit** — `docs: la tanda de UI del 25/08 en CLAUDE.md`
 
 ## Self-review
 

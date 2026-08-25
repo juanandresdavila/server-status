@@ -4,6 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## Dónde retomar (handoff del 2026-08-25)
+
+> Borrar o reescribir esta sección antes del primer commit de lo que sigue.
+
+La tanda de UI del 25/08 quedó **completa en la rama
+`claude/ui-improvements-features-ba2657`, SIN mergear y SIN deployar** (Juan
+decide el merge; nunca squash). Los 8 pedidos: fechas DD/MM/YYYY, toggles por
+ítem para nivel/severidad, sin carteles de ayuda, panel bilingüe es/en con
+ruta `/events`, orden por defecto por estado, CPU de containers sobre la
+máquina, resolver/archivar incidentes, y filtros que se aplican solos. Plan
+ejecutado en `docs/superpowers/plans/2026-08-25-mejoras-ui-panel.md`.
+
+Verificación al cerrar: `go test ./...` y `go vet ./...` verdes (comandos
+sueltos), y el flujo entero verificado a mano contra un store real con
+`go run ./cmd/preview-panel/` (programa sin commitear, recrearlo del plan si
+hace falta): orden, toggles, auto-submit, es/en, resolver → archivar → /events
+conserva la historia.
+
+Al deployar acordarse: la migración 11 corre sola; el `cpu_pct` histórico de
+containers queda en la escala vieja (ver gotcha nuevo).
+
 ## Qué es esto
 
 Monitoreo, avisos por Telegram y página de estado de un VPS chico (OVH VPS-3,
@@ -43,6 +64,28 @@ reinicio del host que no avisó a nadie. Ver
 - **Rango desde–hasta** explícito en `/logs`, y **aviso de truncado**.
 - **Vista `/eventos`**: incidentes, reinicios y errores de log en una línea de
   tiempo única.
+
+**Tanda del 25/08/2026 — mejoras de UI del panel.** Ocho pedidos de uso, plan
+en `docs/superpowers/plans/2026-08-25-mejoras-ui-panel.md`:
+
+- **Fechas completas** DD/MM/YYYY en las tres vistas.
+- **Toggles por ítem** para nivel (/logs) y severidad (/events): el filtro es
+  un conjunto (`?nivel=WARN&nivel=ERROR`, param repetido), ya no un mínimo.
+  Sin params: todo menos TRACE.
+- **Filtros que se aplican solos** (submit al change, debounce en el texto) y
+  sin carteles de ayuda.
+- **Panel bilingüe es/en**: cookie `lang`, seteada por `?lang=`; toggle en el
+  nav. Tabla de textos en `internal/web/idiomas.go`, un set de plantillas
+  parseado por idioma. La ruta `/eventos` pasó a **`/events`** (301 con query).
+- **Orden por defecto por estado**: lo roto arriba; servicios después por
+  latencia, containers por RAM.
+- **CPU de containers sobre la capacidad total** de la máquina (antes escala
+  docker-stats, 100 % = un core).
+- **Resolver y archivar incidentes** desde el panel: `POST
+  /incidents/{id}/resolve` reusa `CerrarIncidente` (mismo camino que el motor:
+  manda el aviso de cierre, y si sigue mal el motor lo reabre); `archive`
+  exige incidente cerrado y lo esconde del panel — `/events` lo sigue
+  mostrando. Migración 11: `incidents.archived_at`.
 
 ## Required reading
 
@@ -177,6 +220,12 @@ a tocarlos todos cada vez que se agrega una.
 
 ## Gotchas que costaron caro
 
+- **El `cpu_pct` de containers cambió de escala el 25/08/2026.** Hasta esa
+  fecha se guardaba en escala docker-stats (100 % = un core, tope real
+  cores×100: un container "al 25 %" con el host al 8 %); desde entonces es %
+  de la capacidad total de la máquina (`deltaCPU/deltaSys × 100`, sin
+  `× cpus`). El histórico viejo en `container_samples` NO se recalculó — no
+  hay forma— así que una serie que cruza esa fecha da un salto que no es real.
 - **Los porcentajes de CPU no se comparan con `!=`.** `1000/10000 × 6 × 100` da
   `60.00000000000001`. Los tests usan tolerancia.
 - **Los sockets unix no pasan de ~104 caracteres de ruta.** En los tests del
