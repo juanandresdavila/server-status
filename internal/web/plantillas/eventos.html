@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="es">
+<html lang="{{ lang }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>eventos · server-status</title>
+<title>{{ t "nav-eventos" }} · server-status</title>
 <style>
   :root { color-scheme: light dark; --borde:#8883; --err:#c0392b; --warn:#b7791f; --ok:#2e7d32; }
   * { box-sizing: border-box; }
@@ -48,7 +48,7 @@
 <body>
 {{ template "nav" .Nav }}
 
-<h1>eventos</h1>
+<h1>{{ t "nav-eventos" }}</h1>
 
 <form method="get">
   {{/* Toggles por ítem, igual que los niveles en /logs. Sin ninguno marcado,
@@ -60,13 +60,13 @@
   </span>
   <select name="horas">
     {{ range .Rangos }}
-    <option value="{{ .Valor }}" {{ if eq .Valor $.Horas }}selected{{ end }}>{{ .Texto }}</option>
+    <option value="{{ . }}" {{ if eq . $.Horas }}selected{{ end }}>{{ t (printf "rango-%d" .) }}</option>
     {{ end }}
   </select>
   <span class="rango">
-    <label for="desde">desde</label>
+    <label for="desde">{{ t "desde" }}</label>
     <input type="datetime-local" id="desde" name="desde" value="{{ .Ventana.ValorDesde }}">
-    <label for="hasta">hasta</label>
+    <label for="hasta">{{ t "hasta" }}</label>
     <input type="datetime-local" id="hasta" name="hasta" value="{{ .Ventana.ValorHasta }}">
   </span>
 </form>
@@ -84,7 +84,7 @@
     {{- end }}
   </div>
 {{- else }}
-  <div class="vacio">Sin novedades en esta ventana. Es la respuesta que uno quiere.</div>
+  <div class="vacio">{{ t "sin-novedades" }}</div>
 {{- end }}
 </div>
 <script>

@@ -1,0 +1,132 @@
+package web
+
+import "net/http"
+
+// texto es un rótulo del panel en los dos idiomas. El español es el original;
+// el inglés existe porque el panel puede tener que mostrarse a alguien que no
+// lee castellano, y las rutas ya quedaron en inglés.
+type texto struct{ ES, EN string }
+
+// textos: la clave es lo que las plantillas escriben en {{ t "clave" }}. Los
+// textos que se arman en Go (truncados, títulos de eventos, export) también
+// salen de acá, vía tr — un solo lugar que traducir.
+var textos = map[string]texto{
+	// nav
+	"nav-eventos": {"eventos", "events"},
+	// el valor es el idioma DESTINO del toggle y su etiqueta: en la página en
+	// español se ofrece "EN", y al revés.
+	"idioma-otro":     {"en", "es"},
+	"idioma-etiqueta": {"EN", "ES"},
+
+	// panel: la línea de arriba y las tarjetas
+	"carga":       {"carga", "load"},
+	"actualizado": {"actualizado", "updated"},
+	"cpu-pico":    {"CPU pico", "CPU peak"},
+	"memoria":     {"Memoria", "Memory"},
+	"disco":       {"Disco", "Disk"},
+
+	// panel: secciones y tablas
+	"historial":       {"Historial", "History"},
+	"servicios":       {"Servicios", "Services"},
+	"incidentes":      {"Incidentes", "Incidents"},
+	"servicio":        {"Servicio", "Service"},
+	"estado":          {"Estado", "Status"},
+	"codigo":          {"Código", "Code"},
+	"latencia":        {"Latencia", "Latency"},
+	"detalle":         {"Detalle", "Detail"},
+	"caido":           {"CAÍDO", "DOWN"},
+	"nombre":          {"Nombre", "Name"},
+	"salud":           {"Salud", "Health"},
+	"reinicios":       {"Reinicios", "Restarts"},
+	"sujeto":          {"Sujeto", "Subject"},
+	"severidad":       {"Severidad", "Severity"},
+	"desde-col":       {"Desde", "From"},
+	"hasta-col":       {"Hasta", "Until"},
+	"abierto":         {"abierto", "open"},
+	"sin-incidentes":  {"sin incidentes registrados", "no incidents recorded"},
+	"resolver":        {"resolver", "resolve"},
+	"archivar":        {"archivar", "archive"},
+
+	// panel: títulos de los gráficos (viven en el JS de la plantilla)
+	"g-cpu":       {"CPU %", "CPU %"},
+	"g-mem":       {"Memoria %", "Memory %"},
+	"g-mem-gib":   {"Memoria (GiB)", "Memory (GiB)"},
+	"g-disco":     {"Disco %", "Disk %"},
+	"g-disco-gib": {"Disco (GiB)", "Disk (GiB)"},
+	"g-load":      {"Carga (1 min)", "Load (1 min)"},
+
+	// rangos: la clave lleva el valor en horas ({{ t (printf "rango-%d" .) }})
+	"rango-1":   {"última hora", "last hour"},
+	"rango-6":   {"6 horas", "6 hours"},
+	"rango-24":  {"24 horas", "24 hours"},
+	"rango-168": {"7 días", "7 days"},
+	"rango-720": {"30 días", "30 days"},
+
+	// logs
+	"buscar-ph":      {"buscar… (probá conex* o error)", "search… (try conex* or error)"},
+	"todos":          {"todos los containers", "all containers"},
+	"desde":          {"desde", "from"},
+	"hasta":          {"hasta", "until"},
+	"exportar":       {"exportar", "export"},
+	"sin-resultados": {"sin resultados", "no results"},
+	"truncado-vista": {
+		"Se alcanzó el tope de %d líneas: esto cubre desde %s, no desde %s. Achicá la ventana, elegí un container o apagá niveles ruidosos.",
+		"Hit the %d-line cap: this covers from %s, not from %s. Narrow the window, pick a container or turn off noisy levels.",
+	},
+
+	// export (texto plano)
+	"export-pedido":   {"# pedido: %s → %s (niveles %s)\n", "# requested: %s → %s (levels %s)\n"},
+	"export-truncado": {"# TRUNCADO en %d líneas: el archivo cubre desde %s, no desde lo pedido.\n", "# TRUNCATED at %d lines: the file covers from %s, not from what was requested.\n"},
+	"export-consejo":  {"# Achicá la ventana, filtrá por container o apagá niveles ruidosos.\n", "# Narrow the window, filter by container or turn off noisy levels.\n"},
+	"export-lineas":   {"# %d líneas\n\n", "# %d lines\n\n"},
+
+	// tail
+	"conectando":   {"conectando…", "connecting…"},
+	"en-vivo":      {"en vivo", "live"},
+	"desconectado": {"desconectado — recargá para reintentar", "disconnected — reload to retry"},
+
+	// eventos: títulos y orígenes que se arman en Go
+	"sin-novedades":     {"Sin novedades en esta ventana. Es la respuesta que uno quiere.", "Nothing new in this window. That's the answer you want."},
+	"se-abrio":          {"se abrió", "opened"},
+	"se-cerro":          {"se cerró", "closed"},
+	"estuvo-mal":        {"estuvo mal", "was down for"},
+	"reboot":            {"el servidor se reinició", "the server rebooted"},
+	"container_restart": {"containers reiniciados", "containers restarted"},
+	"monitor_start":     {"el monitor arrancó", "the monitor started"},
+	"origen-incidente":  {"incidente", "incident"},
+	"origen-evento":     {"evento", "event"},
+	"origen-log":        {"log", "log"},
+
+	// sujetos legibles ('host:disk' → 'disco'/'disk')
+	"sujeto-disk": {"disco", "disk"},
+	"sujeto-mem":  {"memoria", "memory"},
+	"sujeto-swap": {"swap", "swap"},
+	"sujeto-load": {"carga", "load"},
+}
+
+// tr traduce una clave. Una clave sin texto vuelve tal cual: un rótulo raro a
+// la vista es mejor que uno desaparecido en silencio.
+func tr(idioma, clave string) string {
+	t, ok := textos[clave]
+	if !ok {
+		return clave
+	}
+	if idioma == "en" {
+		return t.EN
+	}
+	return t.ES
+}
+
+// idiomaDe resuelve el idioma del request: el query param manda —y se guarda
+// en la cookie, porque el panel se recarga solo cada 60 s y los links no
+// arrastran el parámetro—, después la cookie, y el default es español.
+func idiomaDe(w http.ResponseWriter, r *http.Request) string {
+	if l := r.URL.Query().Get("lang"); l == "es" || l == "en" {
+		http.SetCookie(w, &http.Cookie{Name: "lang", Value: l, Path: "/", MaxAge: 365 * 24 * 3600})
+		return l
+	}
+	if c, err := r.Cookie("lang"); err == nil && (c.Value == "es" || c.Value == "en") {
+		return c.Value
+	}
+	return "es"
+}

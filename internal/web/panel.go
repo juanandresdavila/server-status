@@ -34,17 +34,30 @@ type Datos interface {
 	ArchivarIncidente(id int64, cuando time.Time) error
 }
 
-var plantillaPanel = template.Must(template.New("panel").Funcs(template.FuncMap{
-	"pct": pct,
-	"gib": gib,
-	"mib": func(b uint64) float64 { return float64(b) / (1024 * 1024) },
-	// Sin zona fija sería t.Local(), y el VPS corre en Etc/UTC: el panel venía
-	// mostrando UTC mientras uno lo leía como hora argentina. La zona sale de
-	// la config, que es la misma que usa el resumen diario.
-	"hora": func(t time.Time, loc *time.Location) string { return enZona(t, loc).Format("02/01/2006 15:04") },
-	"en":   enZona,
-}).ParseFS(plantillas, "plantillas/nav.html", "plantillas/panel.html",
-	"plantillas/logs.html", "plantillas/tail.html", "plantillas/eventos.html"))
+// plantillasCon parsea el set completo con t cerrada sobre un idioma: las
+// plantillas se escriben igual que antes y el idioma no viaja en cada dato.
+// Se parsea una vez por idioma al arrancar — hacerlo por request sería tirar
+// el trabajo 1440 veces por día por pestaña abierta.
+func plantillasCon(idioma string) *template.Template {
+	return template.Must(template.New("panel").Funcs(template.FuncMap{
+		"pct": pct,
+		"gib": gib,
+		"mib": func(b uint64) float64 { return float64(b) / (1024 * 1024) },
+		// Sin zona fija sería t.Local(), y el VPS corre en Etc/UTC: el panel venía
+		// mostrando UTC mientras uno lo leía como hora argentina. La zona sale de
+		// la config, que es la misma que usa el resumen diario.
+		"hora": func(t time.Time, loc *time.Location) string { return enZona(t, loc).Format("02/01/2006 15:04") },
+		"en":   enZona,
+		"t":    func(clave string) string { return tr(idioma, clave) },
+		"lang": func() string { return idioma },
+	}).ParseFS(plantillas, "plantillas/nav.html", "plantillas/panel.html",
+		"plantillas/logs.html", "plantillas/tail.html", "plantillas/eventos.html"))
+}
+
+var plantillasIdioma = map[string]*template.Template{
+	"es": plantillasCon("es"),
+	"en": plantillasCon("en"),
+}
 
 // nav es lo que el header necesita saber de la vista que lo está pintando.
 // Container puede venir vacío: sin container elegido no hay tail al que ir.
@@ -54,13 +67,11 @@ type nav struct {
 	Container string
 }
 
-// rangos son las opciones de tiempo, iguales en las tres vistas a propósito:
-// el header propaga ?horas= entre ellas, y un valor que el <select> de logs no
-// tuviera se vería como "última hora" mientras filtra por otra cosa.
-var rangos = []struct {
-	Valor int
-	Texto string
-}{{1, "última hora"}, {6, "6 horas"}, {24, "24 horas"}, {168, "7 días"}, {720, "30 días"}}
+// rangos son las opciones de tiempo en horas, iguales en las tres vistas a
+// propósito: el header propaga ?horas= entre ellas, y un valor que el <select>
+// de logs no tuviera se vería como "última hora" mientras filtra por otra
+// cosa. El rótulo de cada una sale de textos, clave "rango-<horas>".
+var rangos = []int{1, 6, 24, 168, 720}
 
 type vistaPanel struct {
 	Nav        nav
@@ -70,10 +81,7 @@ type vistaPanel struct {
 	Probes     []model.ProbeResult
 	Incidentes []model.Incidente
 	Horas      int
-	Rangos     []struct {
-		Valor int
-		Texto string
-	}
+	Rangos     []int
 }
 
 // enZona nunca recibe nil sin defenderse: t.In(nil) PANIQUEA, y un panic adentro
@@ -116,7 +124,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		plantillaPanel.ExecuteTemplate(w, "tail.html", struct {
+		plantillasIdioma[idiomaDe(w, r)].ExecuteTemplate(w, "tail.html", struct {
 			Nav       nav
 			Container string
 		}{nav{Activo: "tail", Horas: horasDe(r), Container: c}, c})
@@ -127,6 +135,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 	// navegador renderizando 10 000 divs, es un archivo que se abre en otro lado.
 	mux.HandleFunc("GET /logs/export", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		idioma := idiomaDe(w, r)
 		v := ventanaDe(r, time.Now(), zona)
 		niveles := nivelesDe(r)
 
@@ -149,15 +158,15 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		// qué ventana cubre se lee como si cubriera la que uno pidió. Este
 		// export salió una vez con "24h" en el nombre cubriendo 4 h 54 m, y el
 		// reinicio que se buscaba estaba en las horas que faltaban.
-		fmt.Fprintf(w, "# pedido: %s → %s (niveles %s)\n",
+		fmt.Fprintf(w, tr(idioma, "export-pedido"),
 			v.en(v.Desde).Format(time.DateTime), v.en(v.Hasta).Format(time.DateTime),
 			strings.Join(niveles, ","))
 		if len(lineas) == topeExport {
-			fmt.Fprintf(w, "# TRUNCADO en %d líneas: el archivo cubre desde %s, no desde lo pedido.\n",
+			fmt.Fprintf(w, tr(idioma, "export-truncado"),
 				topeExport, v.en(lineas[len(lineas)-1].TS).Format(time.DateTime))
-			fmt.Fprintf(w, "# Achicá la ventana, filtrá por container o subí el nivel mínimo.\n")
+			fmt.Fprint(w, tr(idioma, "export-consejo"))
 		}
-		fmt.Fprintf(w, "# %d líneas\n\n", len(lineas))
+		fmt.Fprintf(w, tr(idioma, "export-lineas"), len(lineas))
 
 		// Vienen de la más nueva a la más vieja; se escriben al revés para que
 		// el archivo se lea como una terminal.
@@ -170,6 +179,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 
 	mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		idioma := idiomaDe(w, r)
 		v := ventanaDe(r, time.Now(), zona)
 		niveles := nivelesDe(r)
 
@@ -185,9 +195,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		// hasta dónde llega de verdad lo que se está mostrando.
 		truncado := ""
 		if len(lineas) == topeVista {
-			truncado = fmt.Sprintf(
-				"Se alcanzó el tope de %d líneas: esto cubre desde %s, no desde %s. "+
-					"Achicá la ventana, elegí un container o subí el nivel mínimo.",
+			truncado = fmt.Sprintf(tr(idioma, "truncado-vista"),
 				topeVista,
 				v.en(lineas[len(lineas)-1].TS).Format(time.DateTime),
 				v.en(v.Desde).Format(time.DateTime))
@@ -203,7 +211,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		errPlantilla := plantillaPanel.ExecuteTemplate(w, "logs.html", struct {
+		errPlantilla := plantillasIdioma[idioma].ExecuteTemplate(w, "logs.html", struct {
 			Nav          nav
 			Zona         *time.Location
 			Q, Container string
@@ -213,10 +221,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			Containers   []string
 			Lineas       []model.LineaLog
 			Niveles      []toggleNivel
-			Rangos       []struct {
-				Valor int
-				Texto string
-			}
+			Rangos       []int
 		}{
 			Nav:  nav{Activo: "logs", Horas: v.Horas, Container: q.Get("container")},
 			Zona: zona,
@@ -232,11 +237,12 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		}
 	})
 
-	// /eventos es la vista que faltaba: qué pasó y cuándo, en una sola línea de
+	// /events es la vista que faltaba: qué pasó y cuándo, en una sola línea de
 	// tiempo. Hasta ahora los incidentes estaban abajo del panel, los reinicios
 	// no se registraban en ningún lado y los errores de log había que ir a
 	// buscarlos a mano con el filtro puesto.
-	mux.HandleFunc("GET /eventos", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
+		idioma := idiomaDe(w, r)
 		v := ventanaDe(r, time.Now(), zona)
 		sevs := severidadesValidas(r.URL.Query()["sev"])
 
@@ -259,26 +265,33 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		errPlantilla := plantillaPanel.ExecuteTemplate(w, "eventos.html", struct {
+		errPlantilla := plantillasIdioma[idioma].ExecuteTemplate(w, "eventos.html", struct {
 			Nav       nav
 			Zona      *time.Location
 			Ventana   Ventana
 			Horas     int
 			Sevs      []toggleNivel
 			Novedades []Novedad
-			Rangos    []struct {
-				Valor int
-				Texto string
-			}
+			Rangos    []int
 		}{
-			Nav: nav{Activo: "eventos", Horas: v.Horas}, Zona: zona,
+			Nav: nav{Activo: "events", Horas: v.Horas}, Zona: zona,
 			Ventana: v, Horas: v.Horas, Sevs: togglesSeveridad(sevs),
-			Novedades: armarNovedades(incidentes, eventos, errores, v.Desde, v.Hasta, sevs),
+			Novedades: armarNovedades(incidentes, eventos, errores, v.Desde, v.Hasta, sevs, idioma),
 			Rangos:    rangos,
 		})
 		if errPlantilla != nil {
 			slog.Error("no se pudo renderizar los eventos", "err", errPlantilla)
 		}
+	})
+
+	// La ruta vieja en castellano. Redirect permanente con la query intacta:
+	// los marcadores y los links de los avisos viejos siguen funcionando.
+	mux.HandleFunc("GET /eventos", func(w http.ResponseWriter, r *http.Request) {
+		destino := "/events"
+		if r.URL.RawQuery != "" {
+			destino += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, destino, http.StatusMovedPermanently)
 	})
 
 	// Las acciones son POST y redirigen al panel: un GET que muta estado
@@ -410,7 +423,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		})
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := plantillaPanel.ExecuteTemplate(w, "panel.html", v); err != nil {
+		if err := plantillasIdioma[idiomaDe(w, r)].ExecuteTemplate(w, "panel.html", v); err != nil {
 			// Ya se empezó a escribir el cuerpo: solo queda registrar.
 			return
 		}
