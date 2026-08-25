@@ -27,6 +27,11 @@ type Datos interface {
 	UltimosIncidentes(n int) ([]model.Incidente, error)
 	SerieHost(desde, hasta time.Time) ([]model.HostSample, error)
 	EventosEntre(desde, hasta time.Time, limite int) ([]model.Evento, error)
+	// Las dos acciones del panel sobre incidentes. Cerrar es el mismo método
+	// que usa el motor: por la cola derivada eso manda el aviso de cierre, y
+	// si el sujeto sigue mal el motor lo reabre en el próximo tick.
+	CerrarIncidente(id int64, cuando time.Time) error
+	ArchivarIncidente(id int64, cuando time.Time) error
 }
 
 var plantillaPanel = template.Must(template.New("panel").Funcs(template.FuncMap{
@@ -276,6 +281,26 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		}
 	})
 
+	// Las acciones son POST y redirigen al panel: un GET que muta estado
+	// termina disparado por el prefetch de un navegador.
+	accion := func(nombre string, aplicar func(int64, time.Time) error) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+			if err != nil {
+				http.Error(w, "id inválido", http.StatusBadRequest)
+				return
+			}
+			if err := aplicar(id, time.Now()); err != nil {
+				slog.Error("no se pudo "+nombre+" el incidente", "id", id, "err", err)
+				http.Error(w, "no se pudo "+nombre, http.StatusInternalServerError)
+				return
+			}
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+		}
+	}
+	mux.HandleFunc("POST /incidents/{id}/resolve", accion("resolver", d.CerrarIncidente))
+	mux.HandleFunc("POST /incidents/{id}/archive", accion("archivar", d.ArchivarIncidente))
+
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
@@ -352,9 +377,17 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			http.Error(w, "no se pudieron leer los servicios", http.StatusInternalServerError)
 			return
 		}
-		if v.Incidentes, err = d.UltimosIncidentes(15); err != nil {
+		// Se piden de más porque los archivados se filtran acá: el panel los
+		// esconde, /eventos los sigue mostrando como historia.
+		incidentes, err := d.UltimosIncidentes(50)
+		if err != nil {
 			http.Error(w, "no se pudieron leer los incidentes", http.StatusInternalServerError)
 			return
+		}
+		for _, i := range incidentes {
+			if i.ArchivadoEn == nil && len(v.Incidentes) < 15 {
+				v.Incidentes = append(v.Incidentes, i)
+			}
 		}
 
 		// Lo roto arriba, que es para lo que uno abre el panel; entre lo sano,
