@@ -4,27 +4,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-## Dónde retomar (handoff del 2026-08-25)
-
-> Borrar o reescribir esta sección antes del primer commit de lo que sigue.
-
-La tanda de UI del 25/08 quedó **completa en la rama
-`claude/ui-improvements-features-ba2657`, SIN mergear y SIN deployar** (Juan
-decide el merge; nunca squash). Los 8 pedidos: fechas DD/MM/YYYY, toggles por
-ítem para nivel/severidad, sin carteles de ayuda, panel bilingüe es/en con
-ruta `/events`, orden por defecto por estado, CPU de containers sobre la
-máquina, resolver/archivar incidentes, y filtros que se aplican solos. Plan
-ejecutado en `docs/superpowers/plans/2026-08-25-mejoras-ui-panel.md`.
-
-Verificación al cerrar: `go test ./...` y `go vet ./...` verdes (comandos
-sueltos), y el flujo entero verificado a mano contra un store real con
-`go run ./cmd/preview-panel/` (programa sin commitear, recrearlo del plan si
-hace falta): orden, toggles, auto-submit, es/en, resolver → archivar → /events
-conserva la historia.
-
-Al deployar acordarse: la migración 11 corre sola; el `cpu_pct` histórico de
-containers queda en la escala vieja (ver gotcha nuevo).
-
 ## Qué es esto
 
 Monitoreo, avisos por Telegram y página de estado de un VPS chico (OVH VPS-3,
