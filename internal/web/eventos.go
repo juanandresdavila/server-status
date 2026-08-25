@@ -21,22 +21,30 @@ type Novedad struct {
 	Detalle   string
 }
 
-// Rango de severidad, para ordenar y filtrar. Igual que con los niveles de
-// log, en texto no se puede comparar: 'critical' < 'info' alfabéticamente.
-var pesoSeveridad = map[string]int{"info": 0, "warning": 1, "critical": 2}
+// severidades conocidas, en orden. El filtro es un toggle por ítem, igual que
+// los niveles de log: "info y critical sin warning" tiene que poder pedirse.
+var severidades = []string{"info", "warning", "critical"}
 
-// SeveridadAlMenos filtra por severidad mínima.
-func SeveridadAlMenos(s, minimo string) bool {
-	return pesoSeveridad[s] >= pesoSeveridad[minimo]
-}
-
-// severidadValida normaliza lo que venga de la query string.
-func severidadValida(s string) string {
-	switch s {
-	case "critical", "warning", "info":
-		return s
+// severidadesValidas normaliza los toggles de la query string: filtra basura y
+// dedup. Sin ninguna elegida, todas: el default de la vista es no esconder nada.
+func severidadesValidas(ss []string) []string {
+	conocida := map[string]bool{"info": true, "warning": true, "critical": true}
+	elegidas := map[string]bool{}
+	for _, s := range ss {
+		if conocida[s] {
+			elegidas[s] = true
+		}
 	}
-	return "info" // el default muestra todo
+	if len(elegidas) == 0 {
+		return severidades
+	}
+	out := make([]string, 0, len(elegidas))
+	for _, s := range severidades {
+		if elegidas[s] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // armarNovedades funde las tres fuentes en una sola línea de tiempo.
@@ -44,7 +52,7 @@ func severidadValida(s string) string {
 // Es una función pura sobre los tres slices: se testea sin base, que es la
 // misma razón por la que rules declara su propia interfaz Store.
 func armarNovedades(incidentes []model.Incidente, eventos []model.Evento,
-	errores []model.LineaLog, desde, hasta time.Time, minimo string) []Novedad {
+	errores []model.LineaLog, desde, hasta time.Time, mostrar []string) []Novedad {
 
 	var out []Novedad
 	dentro := func(t time.Time) bool {
@@ -87,9 +95,13 @@ func armarNovedades(incidentes []model.Incidente, eventos []model.Evento,
 		}
 	}
 
+	pasa := map[string]bool{}
+	for _, s := range mostrar {
+		pasa[s] = true
+	}
 	filtradas := out[:0]
 	for _, n := range out {
-		if SeveridadAlMenos(n.Severidad, minimo) {
+		if pasa[n.Severidad] {
 			filtradas = append(filtradas, n)
 		}
 	}
