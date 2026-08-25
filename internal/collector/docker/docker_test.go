@@ -46,9 +46,8 @@ func servidorFalso(t *testing.T, h http.Handler) *docker.Client {
 }
 
 // casiIgual compara porcentajes con tolerancia. El cálculo de CPU encadena
-// divisiones y multiplicaciones sobre float64, así que 60 sale como
-// 60.00000000000001: comparar con != acá es un test que falla por el redondeo
-// del hardware y no por la lógica.
+// divisiones sobre float64 y el resultado arrastra el epsilon del hardware:
+// comparar con != acá es un test que falla por el redondeo y no por la lógica.
 func casiIgual(a, b float64) bool {
 	d := a - b
 	return d < 1e-9 && d > -1e-9
@@ -156,9 +155,11 @@ func TestStatsCalculaCPUYMemoria(t *testing.T) {
 		t.Fatalf("Stats: %v", err)
 	}
 
-	// deltaCPU=1000, deltaSys=10000 → 0.1 · 6 cores · 100 = 60%
-	if !casiIgual(got.CPUPct, 60) {
-		t.Errorf("CPUPct = %v, quería 60", got.CPUPct)
+	// deltaCPU=1000, deltaSys=10000 → 10% de la capacidad total de la máquina.
+	// La fórmula vieja multiplicaba por los cores (docker stats: 100% = un
+	// core) y el panel mostraba containers "al 25%" con el host al 8%.
+	if !casiIgual(got.CPUPct, 10) {
+		t.Errorf("CPUPct = %v, quería 10", got.CPUPct)
 	}
 	// La memoria "real" descuenta el page cache reclamable, igual que
 	// docker stats. Sin descontarlo, todo container que leyó archivos
@@ -239,8 +240,8 @@ func TestRecolectarJuntaTodoYLimitaLaConcurrencia(t *testing.T) {
 	if !ok {
 		t.Fatal("falta el container 'uno' en el resultado")
 	}
-	if uno.Health != "healthy" || uno.Restarts != 1 || !casiIgual(uno.CPUPct, 60) {
-		t.Errorf("uno = %+v, esperaba health=healthy restarts=1 cpu=60", uno)
+	if uno.Health != "healthy" || uno.Restarts != 1 || !casiIgual(uno.CPUPct, 10) {
+		t.Errorf("uno = %+v, esperaba health=healthy restarts=1 cpu=10", uno)
 	}
 }
 
