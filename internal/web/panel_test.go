@@ -38,15 +38,21 @@ func (datosFalsos) UltimasHostSamples(int) ([]model.HostSample, error) {
 }
 
 func (datosFalsos) UltimoEstadoContainers() ([]model.ContainerSample, error) {
+	// A propósito con los rotos al final y los sanos desordenados por RAM:
+	// si el handler no ordena, el test del orden por defecto lo ve.
 	return []model.ContainerSample{
 		{Name: "comm-tool", State: "running", Health: "none", CPUPct: 0.1, MemBytes: 29_000_000},
 		{Name: "supabase-db", State: "running", Health: "healthy", Restarts: 2, MemBytes: 84_000_000},
+		{Name: "muerto", State: "exited", Health: "none", MemBytes: 5_000_000},
+		{Name: "enfermo", State: "running", Health: "unhealthy", MemBytes: 10_000_000},
 	}, nil
 }
 
 func (datosFalsos) UltimoEstadoProbes() ([]model.ProbeResult, error) {
+	// El caído al final a propósito: sin orden en el handler quedaría abajo.
 	return []model.ProbeResult{
 		{Servicio: "comm-tool", OK: true, StatusCode: 200, Latencia: 85 * time.Millisecond},
+		{Servicio: "lento", OK: true, StatusCode: 200, Latencia: 900 * time.Millisecond},
 		{Servicio: "sitio", OK: false, StatusCode: 0, Error: "dial tcp 127.0.0.1:8787: connect: connection refused"},
 	}, nil
 }
@@ -460,6 +466,35 @@ func TestLoQueSeMuestraNoSaleDeTimeLocal(t *testing.T) {
 	// 05:00:31 UTC → 14:00:31 en Tokio.
 	if !strings.Contains(w.Body.String(), "14:00:31") {
 		t.Error("con zona Tokio la vista tendría que mostrar 14:00:31")
+	}
+}
+
+// El orden por defecto pone lo roto arriba: para eso existe el panel. Después,
+// servicios por latencia y containers por RAM, los más pesados primero. El
+// orden por columna del navegador queda para todo lo demás.
+func TestServiciosYContainersOrdenanPorEstado(t *testing.T) {
+	cuerpo := pedir(t, "/").Body.String()
+
+	caido := strings.Index(cuerpo, ">sitio<")
+	lento := strings.Index(cuerpo, ">lento<")
+	rapido := strings.Index(cuerpo, ">comm-tool<")
+	if caido < 0 || lento < 0 || rapido < 0 {
+		t.Fatalf("faltan servicios en el panel: caido=%d lento=%d rapido=%d", caido, lento, rapido)
+	}
+	if !(caido < lento && lento < rapido) {
+		t.Errorf("servicios: quería caído(%d) < lento(%d) < rápido(%d)", caido, lento, rapido)
+	}
+
+	muerto := strings.Index(cuerpo, "container=muerto")
+	enfermo := strings.Index(cuerpo, "container=enfermo")
+	pesado := strings.Index(cuerpo, "container=supabase-db")
+	liviano := strings.Index(cuerpo, "container=comm-tool")
+	if muerto < 0 || enfermo < 0 || pesado < 0 || liviano < 0 {
+		t.Fatal("faltan containers en el panel")
+	}
+	if !(muerto < pesado && enfermo < pesado && pesado < liviano) {
+		t.Errorf("containers: los rotos van arriba y después por RAM: muerto=%d enfermo=%d pesado=%d liviano=%d",
+			muerto, enfermo, pesado, liviano)
 	}
 }
 

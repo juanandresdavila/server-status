@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -355,6 +356,25 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			http.Error(w, "no se pudieron leer los incidentes", http.StatusInternalServerError)
 			return
 		}
+
+		// Lo roto arriba, que es para lo que uno abre el panel; entre lo sano,
+		// el servicio más lento y el container más pesado primero. El orden por
+		// columna del navegador sigue disponible para todo lo demás.
+		sort.SliceStable(v.Probes, func(i, j int) bool {
+			if v.Probes[i].OK != v.Probes[j].OK {
+				return !v.Probes[i].OK
+			}
+			return v.Probes[i].Latencia > v.Probes[j].Latencia
+		})
+		mal := func(c model.ContainerSample) bool {
+			return c.State != "running" || c.Health == "unhealthy"
+		}
+		sort.SliceStable(v.Containers, func(i, j int) bool {
+			if mal(v.Containers[i]) != mal(v.Containers[j]) {
+				return mal(v.Containers[i])
+			}
+			return v.Containers[i].MemBytes > v.Containers[j].MemBytes
+		})
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := plantillaPanel.ExecuteTemplate(w, "panel.html", v); err != nil {
