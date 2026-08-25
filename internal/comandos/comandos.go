@@ -43,7 +43,7 @@ type Datos interface {
 	UltimasHostSamples(n int) ([]model.HostSample, error)
 	UltimoEstadoProbes() ([]model.ProbeResult, error)
 	UltimosIncidentes(n int) ([]model.Incidente, error)
-	BuscarLogs(texto, container, nivelMinimo string, desde, hasta time.Time, limite int) ([]model.LineaLog, error)
+	BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error)
 	Silenciar(hasta time.Time) error
 }
 
@@ -139,9 +139,9 @@ func logs(d Datos, args []string, ahora time.Time) (string, error) {
 		n = 50
 	}
 
-	// Mínimo INFO: el /logs del bot manda unas pocas líneas a un chat, y
+	// Sin TRACE: el /logs del bot manda unas pocas líneas a un chat, y
 	// gastarlas en la continuación de un SQL no le sirve a nadie.
-	ls, err := d.BuscarLogs("", container, "INFO", ahora.AddDate(0, 0, -30), ahora, n)
+	ls, err := d.BuscarLogs("", container, []string{"INFO", "WARN", "ERROR"}, ahora.AddDate(0, 0, -30), ahora, n)
 	if err != nil {
 		return "", err
 	}

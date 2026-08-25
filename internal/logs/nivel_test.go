@@ -2,6 +2,7 @@ package logs
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -207,5 +208,27 @@ func TestNivelAccesoEnJSONTambienEsTrace(t *testing.T) {
 				t.Errorf("Nivel(%q) = %q, quiero %q", c.linea, got, c.quiero)
 			}
 		})
+	}
+}
+
+// Conjunto valida lo que viene de la query string: filtra basura, dedup, y con
+// nada elegido cae al default de la vista (INFO+WARN+ERROR — todo menos TRACE).
+// Existe porque el filtro dejó de ser "mínimo" y pasó a ser un toggle por ítem.
+func TestConjunto(t *testing.T) {
+	casos := []struct {
+		entrada []string
+		quiero  []Nivel
+	}{
+		{nil, []Nivel{Info, Warn, Error}},
+		{[]string{"basura"}, []Nivel{Info, Warn, Error}},
+		{[]string{"ERROR"}, []Nivel{Error}},
+		{[]string{"error", " warn ", "ERROR"}, []Nivel{Warn, Error}},
+		{[]string{"TRACE", "ERROR"}, []Nivel{Trace, Error}},
+		{[]string{"TRACE", "INFO", "WARN", "ERROR"}, []Nivel{Trace, Info, Warn, Error}},
+	}
+	for _, c := range casos {
+		if got := Conjunto(c.entrada); !reflect.DeepEqual(got, c.quiero) {
+			t.Errorf("Conjunto(%v) = %v, quería %v", c.entrada, got, c.quiero)
+		}
 	}
 }

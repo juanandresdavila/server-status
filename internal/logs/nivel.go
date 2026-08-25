@@ -46,6 +46,31 @@ func NivelValido(s string) Nivel {
 	return Info
 }
 
+// Conjunto convierte los valores repetidos de una query string (?nivel=WARN&
+// nivel=ERROR) en el conjunto de niveles a mostrar, en orden fijo y sin
+// repetidos. Con nada válido cae al default de la vista: todo menos TRACE.
+// Existe porque el filtro dejó de ser "mínimo" y pasó a ser un toggle por
+// ítem: WARN apagado con TRACE y ERROR prendidos no se puede decir con un piso.
+func Conjunto(ss []string) []Nivel {
+	elegidos := map[Nivel]bool{}
+	for _, s := range ss {
+		n := Nivel(strings.ToUpper(strings.TrimSpace(s)))
+		if _, conocido := orden[n]; conocido {
+			elegidos[n] = true
+		}
+	}
+	if len(elegidos) == 0 {
+		return []Nivel{Info, Warn, Error}
+	}
+	out := make([]Nivel, 0, len(elegidos))
+	for _, n := range []Nivel{Trace, Info, Warn, Error} {
+		if elegidos[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 var (
 	// El campo level de un JSON es AUTORITATIVO y se mira antes que nada más.
 	// GoTrue loguea un 400 como {"error":"...","level":"info"}: si el escaneo

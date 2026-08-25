@@ -67,7 +67,7 @@ func (datosFalsos) UltimosIncidentes(int) ([]model.Incidente, error) {
 		AbiertoEn: time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC), Detalle: "HTTP 502",
 	}}, nil
 }
-func (datosFalsos) BuscarLogs(texto, container, nivelMinimo string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+func (datosFalsos) BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
 	var out []model.LineaLog
 	for i := 0; i < limite && i < 40; i++ {
 		out = append(out, model.LineaLog{

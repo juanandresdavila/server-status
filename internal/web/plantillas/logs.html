@@ -31,6 +31,12 @@
   .lv-TRACE .m { opacity: .5; }
   .lv-WARN  .m { color: var(--warn); }
   .lv-ERROR .m { color: var(--err); }
+  .toggles { display: flex; gap: .35rem; }
+  .toggle input { position: absolute; opacity: 0; pointer-events: none; }
+  .toggle span { display: inline-block; padding: .35rem .6rem; border: 1px solid var(--borde);
+                 border-radius: .4rem; font-size: .82rem; opacity: .45; cursor: pointer;
+                 user-select: none; }
+  .toggle input:checked + span { opacity: 1; border-color: currentColor; }
   .rango { display: flex; gap: .35rem; align-items: center; }
   .rango label { font-size: .8rem; opacity: .6; }
   .aviso { border: 1px solid var(--warn); border-left-width: 3px; border-radius: .4rem;
@@ -51,11 +57,14 @@
     <option value="{{ . }}" {{ if eq . $.Container }}selected{{ end }}>{{ . }}</option>
     {{ end }}
   </select>
-  <select name="nivel">
+  {{/* Toggles por ítem, no un mínimo: WARN apagado con ERROR prendido no se
+       puede pedir con un "nivel y peor". Sin ninguno marcado, el server cae
+       al default (todo menos TRACE). */}}
+  <span class="toggles">
     {{ range .Niveles }}
-    <option value="{{ .Valor }}" {{ if eq .Valor $.Nivel }}selected{{ end }}>{{ .Texto }}</option>
+    <label class="toggle"><input type="checkbox" name="nivel" value="{{ .Valor }}"{{ if .Activo }} checked{{ end }}><span>{{ .Valor }}</span></label>
     {{ end }}
-  </select>
+  </span>
   <select name="horas">
     {{ range .Rangos }}
     <option value="{{ .Valor }}" {{ if eq .Valor $.Horas }}selected{{ end }}>{{ .Texto }}</option>
