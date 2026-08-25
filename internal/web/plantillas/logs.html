@@ -13,7 +13,6 @@
   input, select, button { font: inherit; padding: .4rem .6rem; border-radius: .4rem;
                           border: 1px solid var(--borde); background: transparent; color: inherit; }
   input[name=q] { flex: 1; min-width: 14rem; }
-  .ayuda { font-size: .8rem; opacity: .6; margin-bottom: 1rem; }
   pre { font: 12.5px/1.6 ui-monospace, Menlo, monospace; margin: 0;
         border: 1px solid var(--borde); border-radius: .5rem; padding: .75rem;
         overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
@@ -76,21 +75,16 @@
     <label for="hasta">hasta</label>
     <input type="datetime-local" id="hasta" name="hasta" value="{{ .Ventana.ValorHasta }}">
   </span>
-  <button type="submit">buscar</button>
+  {{/* El botón oculto va PRIMERO: sin él, Enter en el campo de texto dispara
+       el primer submit visible —exportar, con formaction— y baja un archivo
+       en vez de buscar. */}}
+  <button hidden tabindex="-1" aria-hidden="true"></button>
   {{/* Mismo form, otro destino: el export baja como archivo lo que la vista
        muestra, con los mismos filtros, sin duplicar controles. */}}
   <button type="submit" formaction="/logs/export">exportar</button>
 </form>
 
 {{ if .Truncado }}<div class="aviso">{{ .Truncado }}</div>{{ end }}
-
-<div class="ayuda">
-  La búsqueda es por palabra completa; con <code>*</code> al final busca por prefijo.
-  Elegí un container y el tail en vivo aparece arriba.
-  Con <strong>desde/hasta</strong> cargados manda ese rango y el desplegable de horas queda ignorado;
-  dejalos vacíos para volver al atajo. <strong>TRACE</strong> es la continuación de líneas
-  multilínea y el logging de acceso: es el 79 % del volumen.
-</div>
 
 <pre>
 {{- range .Lineas }}
@@ -99,5 +93,20 @@
 <div class="vacio">sin resultados</div>
 {{- end }}
 </pre>
+<script>
+  // Los filtros se aplican solos: cambiar un toggle, un select o una fecha
+  // recarga con la selección nueva. El texto espera 700 ms desde la última
+  // tecla — recargar en cada pulsación haría imposible escribir.
+  const form = document.querySelector('form')
+  for (const el of form.querySelectorAll('select, input[type=checkbox], input[type=datetime-local]'))
+    el.addEventListener('change', () => form.submit())
+  const q = form.querySelector('input[name=q]')
+  if (q) {
+    let espera
+    q.addEventListener('input', () => { clearTimeout(espera); espera = setTimeout(() => form.submit(), 700) })
+    // Tras la recarga el foco vuelve al final de lo tipeado, no al principio.
+    q.setSelectionRange(q.value.length, q.value.length)
+  }
+</script>
 </body>
 </html>

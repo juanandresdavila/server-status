@@ -20,7 +20,6 @@
   .toggle input:checked + span { opacity: 1; border-color: currentColor; }
   .rango { display: flex; gap: .35rem; align-items: center; }
   .rango label { font-size: .8rem; opacity: .6; }
-  .ayuda { font-size: .8rem; opacity: .6; margin-bottom: 1rem; }
 
   /* Una línea de tiempo y no una tabla: lo que se busca acá es "qué pasó
      anoche", y eso se lee de arriba abajo, no columna por columna. */
@@ -70,14 +69,7 @@
     <label for="hasta">hasta</label>
     <input type="datetime-local" id="hasta" name="hasta" value="{{ .Ventana.ValorHasta }}">
   </span>
-  <button type="submit">ver</button>
 </form>
-
-<div class="ayuda">
-  Todo lo que pasó, en orden: incidentes que abrieron y cerraron, reinicios del
-  servidor y de containers, y las líneas de log de nivel <strong>ERROR</strong>.
-  Con desde/hasta cargados manda ese rango y el desplegable de horas queda ignorado.
-</div>
 
 <div class="linea">
 {{- range .Novedades }}
@@ -95,5 +87,20 @@
   <div class="vacio">Sin novedades en esta ventana. Es la respuesta que uno quiere.</div>
 {{- end }}
 </div>
+<script>
+  // Los filtros se aplican solos: cambiar un toggle, un select o una fecha
+  // recarga con la selección nueva. El texto espera 700 ms desde la última
+  // tecla — recargar en cada pulsación haría imposible escribir.
+  const form = document.querySelector('form')
+  for (const el of form.querySelectorAll('select, input[type=checkbox], input[type=datetime-local]'))
+    el.addEventListener('change', () => form.submit())
+  const q = form.querySelector('input[name=q]')
+  if (q) {
+    let espera
+    q.addEventListener('input', () => { clearTimeout(espera); espera = setTimeout(() => form.submit(), 700) })
+    // Tras la recarga el foco vuelve al final de lo tipeado, no al principio.
+    q.setSelectionRange(q.value.length, q.value.length)
+  }
+</script>
 </body>
 </html>
