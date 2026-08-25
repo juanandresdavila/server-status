@@ -75,7 +75,7 @@
 {{- range .Novedades }}
   <div class="n {{ .Severidad }}">
     <div class="cab">
-      <span class="cuando">{{ (en .Cuando $.Zona).Format "02/01 15:04:05" }}</span>
+      <span class="cuando">{{ (en .Cuando $.Zona).Format "02/01/2006 15:04:05" }}</span>
       <span class="titulo">{{ .Titulo }}</span>
       <span class="origen">{{ .Origen }}</span>
     </div>
