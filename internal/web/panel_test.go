@@ -58,11 +58,29 @@ func (datosFalsos) UltimoEstadoProbes() ([]model.ProbeResult, error) {
 }
 
 func (datosFalsos) UltimosIncidentes(int) ([]model.Incidente, error) {
-	return []model.Incidente{{
-		ID: 1, Sujeto: "service:sitio", Tipo: "down", Severidad: "critical",
-		AbiertoEn: time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC), Detalle: "HTTP 502",
-	}}, nil
+	cerrado := time.Date(2026, 8, 9, 11, 30, 0, 0, time.UTC)
+	archivado := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	return []model.Incidente{
+		{
+			ID: 1, Sujeto: "service:sitio", Tipo: "down", Severidad: "critical",
+			AbiertoEn: time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC), Detalle: "HTTP 502",
+		},
+		{
+			ID: 2, Sujeto: "service:cerrado", Tipo: "down", Severidad: "warning",
+			AbiertoEn: time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC), CerradoEn: &cerrado,
+			Detalle: "HTTP 500",
+		},
+		{
+			ID: 3, Sujeto: "service:viejo-archivado", Tipo: "down", Severidad: "warning",
+			AbiertoEn: time.Date(2026, 8, 9, 9, 0, 0, 0, time.UTC), CerradoEn: &cerrado,
+			ArchivadoEn: &archivado, Detalle: "HTTP 503",
+		},
+	}, nil
 }
+
+// Las acciones sobre incidentes no le importan a la mayoría de los tests.
+func (datosFalsos) CerrarIncidente(int64, time.Time) error   { return nil }
+func (datosFalsos) ArchivarIncidente(int64, time.Time) error { return nil }
 
 func (d datosFalsos) SerieHost(desde, hasta time.Time) ([]model.HostSample, error) {
 	base := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
@@ -476,6 +494,81 @@ func TestLoQueSeMuestraNoSaleDeTimeLocal(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "14:00:31") {
 		t.Error("con zona Tokio la vista tendría que mostrar 14:00:31")
 	}
+}
+
+// Resolver cierra por el mismo camino que el motor —y por la cola derivada eso
+// manda el aviso de cierre, que es la verdad—; archivar lo saca del panel.
+func TestResolverYArchivarIncidentes(t *testing.T) {
+	var cerrado, archivado int64
+	d := espiaIncidentes{
+		cerrar:   func(id int64) { cerrado = id },
+		archivar: func(id int64) { archivado = id },
+	}
+	h := web.NuevoPanel(d, zonaDePrueba)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/incidents/7/resolve", nil))
+	if w.Code != 303 || cerrado != 7 {
+		t.Errorf("resolve: código=%d cerrado=%d, quería 303 y 7", w.Code, cerrado)
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/incidents/9/archive", nil))
+	if w.Code != 303 || archivado != 9 {
+		t.Errorf("archive: código=%d archivado=%d, quería 303 y 9", w.Code, archivado)
+	}
+
+	// Un id que no es número es un 400, no un panic ni un redirect.
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/incidents/basura/resolve", nil))
+	if w.Code != 400 {
+		t.Errorf("id inválido: código=%d, quería 400", w.Code)
+	}
+}
+
+// El panel esconde los archivados; /eventos los sigue mostrando: es historia.
+func TestElPanelEscondeArchivadosYEventosNo(t *testing.T) {
+	if cuerpo := pedir(t, "/").Body.String(); strings.Contains(cuerpo, "service:viejo-archivado") {
+		t.Error("el panel muestra un incidente archivado")
+	}
+	if cuerpo := pedir(t, "/eventos?horas=720&desde=2026-08-01T00:00&hasta=2026-08-31T00:00").Body.String(); !strings.Contains(cuerpo, "viejo-archivado") {
+		t.Error("/eventos tiene que seguir mostrando la historia archivada")
+	}
+}
+
+// Cada incidente ofrece la acción que corresponde: abierto → resolver;
+// cerrado → archivar. Al revés no tiene sentido.
+func TestLosBotonesDeIncidentes(t *testing.T) {
+	cuerpo := pedir(t, "/").Body.String()
+	if !strings.Contains(cuerpo, `action="/incidents/1/resolve"`) {
+		t.Error("el incidente abierto no ofrece resolver")
+	}
+	if strings.Contains(cuerpo, `action="/incidents/1/archive"`) {
+		t.Error("un incidente abierto no se puede archivar")
+	}
+	if !strings.Contains(cuerpo, `action="/incidents/2/archive"`) {
+		t.Error("el incidente cerrado no ofrece archivar")
+	}
+	if strings.Contains(cuerpo, `action="/incidents/2/resolve"`) {
+		t.Error("un incidente cerrado no se puede resolver de nuevo")
+	}
+}
+
+// espiaIncidentes captura las acciones y delega el resto en datosFalsos.
+type espiaIncidentes struct {
+	datosFalsos
+	cerrar   func(int64)
+	archivar func(int64)
+}
+
+func (e espiaIncidentes) CerrarIncidente(id int64, _ time.Time) error {
+	e.cerrar(id)
+	return nil
+}
+
+func (e espiaIncidentes) ArchivarIncidente(id int64, _ time.Time) error {
+	e.archivar(id)
+	return nil
 }
 
 // Los carteles de ayuda se van (pedido del 25/08) y los filtros se aplican
