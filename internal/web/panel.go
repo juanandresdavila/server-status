@@ -233,7 +233,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 	// buscarlos a mano con el filtro puesto.
 	mux.HandleFunc("GET /eventos", func(w http.ResponseWriter, r *http.Request) {
 		v := ventanaDe(r, time.Now(), zona)
-		minimo := severidadValida(r.URL.Query().Get("sev"))
+		sevs := severidadesValidas(r.URL.Query()["sev"])
 
 		incidentes, err := d.UltimosIncidentes(200)
 		if err != nil {
@@ -259,7 +259,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			Zona      *time.Location
 			Ventana   Ventana
 			Horas     int
-			Sev       string
+			Sevs      []toggleNivel
 			Novedades []Novedad
 			Rangos    []struct {
 				Valor int
@@ -267,8 +267,8 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			}
 		}{
 			Nav: nav{Activo: "eventos", Horas: v.Horas}, Zona: zona,
-			Ventana: v, Horas: v.Horas, Sev: minimo,
-			Novedades: armarNovedades(incidentes, eventos, errores, v.Desde, v.Hasta, minimo),
+			Ventana: v, Horas: v.Horas, Sevs: togglesSeveridad(sevs),
+			Novedades: armarNovedades(incidentes, eventos, errores, v.Desde, v.Hasta, sevs),
 			Rangos:    rangos,
 		})
 		if errPlantilla != nil {
@@ -470,6 +470,19 @@ func togglesDe(elegidos []string) []toggleNivel {
 	out := make([]toggleNivel, 0, 4)
 	for _, n := range []string{"TRACE", "INFO", "WARN", "ERROR"} {
 		out = append(out, toggleNivel{Valor: n, Activo: activo[n]})
+	}
+	return out
+}
+
+// togglesSeveridad, ídem para /eventos: info, warning y critical.
+func togglesSeveridad(elegidas []string) []toggleNivel {
+	activo := map[string]bool{}
+	for _, s := range elegidas {
+		activo[s] = true
+	}
+	out := make([]toggleNivel, 0, len(severidades))
+	for _, s := range severidades {
+		out = append(out, toggleNivel{Valor: s, Activo: activo[s]})
 	}
 	return out
 }

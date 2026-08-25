@@ -376,8 +376,17 @@ func TestVistaEventosMuestraElReinicio(t *testing.T) {
 	}
 }
 
-// El filtro de severidad tiene que poder dejar afuera lo que no es urgente.
+// El filtro de severidad es un toggle por ítem: pidiendo solo critical, un
+// warning no va — y un conjunto no contiguo (info+critical) también se puede.
 func TestVistaEventosFiltraPorSeveridad(t *testing.T) {
+	cuerpo := pedir(t, "/eventos?horas=720&sev=info&sev=critical").Body.String()
+	if strings.Contains(cuerpo, "conexion rechazada") {
+		t.Error("con warning apagado no va un error de log, que es warning")
+	}
+	if !strings.Contains(cuerpo, "el servidor se reinició") {
+		t.Error("el reboot es critical y tenía que estar")
+	}
+
 	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
 	w := httptest.NewRecorder()
 	// Los errores de log son warning: pidiendo solo críticos no van.

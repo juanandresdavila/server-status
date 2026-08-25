@@ -12,6 +12,12 @@
   form { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
   input, select, button { font: inherit; padding: .4rem .6rem; border-radius: .4rem;
                           border: 1px solid var(--borde); background: transparent; color: inherit; }
+  .toggles { display: flex; gap: .35rem; }
+  .toggle input { position: absolute; opacity: 0; pointer-events: none; }
+  .toggle span { display: inline-block; padding: .35rem .6rem; border: 1px solid var(--borde);
+                 border-radius: .4rem; font-size: .82rem; opacity: .45; cursor: pointer;
+                 user-select: none; }
+  .toggle input:checked + span { opacity: 1; border-color: currentColor; }
   .rango { display: flex; gap: .35rem; align-items: center; }
   .rango label { font-size: .8rem; opacity: .6; }
   .ayuda { font-size: .8rem; opacity: .6; margin-bottom: 1rem; }
@@ -46,11 +52,13 @@
 <h1>eventos</h1>
 
 <form method="get">
-  <select name="sev">
-    <option value="info"     {{ if eq .Sev "info" }}selected{{ end }}>todo</option>
-    <option value="warning"  {{ if eq .Sev "warning" }}selected{{ end }}>warnings y peor</option>
-    <option value="critical" {{ if eq .Sev "critical" }}selected{{ end }}>solo críticos</option>
-  </select>
+  {{/* Toggles por ítem, igual que los niveles en /logs. Sin ninguno marcado,
+       el server muestra todo. */}}
+  <span class="toggles">
+    {{ range .Sevs }}
+    <label class="toggle"><input type="checkbox" name="sev" value="{{ .Valor }}"{{ if .Activo }} checked{{ end }}><span>{{ .Valor }}</span></label>
+    {{ end }}
+  </span>
   <select name="horas">
     {{ range .Rangos }}
     <option value="{{ .Valor }}" {{ if eq .Valor $.Horas }}selected{{ end }}>{{ .Texto }}</option>
