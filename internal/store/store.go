@@ -153,6 +153,11 @@ var migraciones = []string{
 	// 05:00:38 y quedaron en restarts=0. Un arranque con el host no lo
 	// incrementa y una recreación lo resetea. StartedAt sí se mueve siempre.
 	`ALTER TABLE container_samples ADD COLUMN started_at INTEGER NOT NULL DEFAULT 0;`,
+
+	// archived_at es "ya lo vi, sacalo del panel": el incidente no se borra
+	// —/events lo sigue mostrando como historia— pero deja de ocupar la tabla
+	// del panel. Solo se archiva uno cerrado; ver ArchivarIncidente.
+	`ALTER TABLE incidents ADD COLUMN archived_at INTEGER;`,
 }
 
 type Store struct{ db *sql.DB }
@@ -410,15 +415,26 @@ func (s *Store) CerrarIncidente(id int64, cuando time.Time) error {
 	return err
 }
 
+// ArchivarIncidente esconde del panel un incidente YA CERRADO. El WHERE exige
+// closed_at porque archivar uno abierto lo haría desaparecer mientras sigue
+// roto — y no falla si no aplica: archivar dos veces o archivar uno abierto es
+// un no-op, no un error.
+func (s *Store) ArchivarIncidente(id int64, cuando time.Time) error {
+	_, err := s.db.Exec(
+		`UPDATE incidents SET archived_at = ? WHERE id = ? AND closed_at IS NOT NULL AND archived_at IS NULL`,
+		cuando.Unix(), id)
+	return err
+}
+
 func (s *Store) IncidentesAbiertos() ([]model.Incidente, error) {
 	return s.consultarIncidentes(`
-		SELECT id, subject, kind, severity, opened_at, closed_at, detail
+		SELECT id, subject, kind, severity, opened_at, closed_at, archived_at, detail
 		FROM incidents WHERE closed_at IS NULL ORDER BY opened_at`)
 }
 
 func (s *Store) UltimosIncidentes(n int) ([]model.Incidente, error) {
 	return s.consultarIncidentes(`
-		SELECT id, subject, kind, severity, opened_at, closed_at, detail
+		SELECT id, subject, kind, severity, opened_at, closed_at, archived_at, detail
 		FROM incidents ORDER BY opened_at DESC LIMIT ` + strconv.Itoa(n))
 }
 
@@ -432,17 +448,22 @@ func (s *Store) consultarIncidentes(q string) ([]model.Incidente, error) {
 	var out []model.Incidente
 	for filas.Next() {
 		var (
-			i       model.Incidente
-			abierto int64
-			cerrado sql.NullInt64
+			i         model.Incidente
+			abierto   int64
+			cerrado   sql.NullInt64
+			archivado sql.NullInt64
 		)
-		if err := filas.Scan(&i.ID, &i.Sujeto, &i.Tipo, &i.Severidad, &abierto, &cerrado, &i.Detalle); err != nil {
+		if err := filas.Scan(&i.ID, &i.Sujeto, &i.Tipo, &i.Severidad, &abierto, &cerrado, &archivado, &i.Detalle); err != nil {
 			return nil, err
 		}
 		i.AbiertoEn = time.Unix(abierto, 0).UTC()
 		if cerrado.Valid {
 			t := time.Unix(cerrado.Int64, 0).UTC()
 			i.CerradoEn = &t
+		}
+		if archivado.Valid {
+			t := time.Unix(archivado.Int64, 0).UTC()
+			i.ArchivadoEn = &t
 		}
 		out = append(out, i)
 	}
