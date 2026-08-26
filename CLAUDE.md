@@ -66,6 +66,33 @@ en `docs/superpowers/plans/2026-08-25-mejoras-ui-panel.md`:
   exige incidente cerrado y lo esconde del panel — `/events` lo sigue
   mostrando. Migración 11: `incidents.archived_at`.
 
+**Tanda del 26/08/2026 — logs en vivo, reinicios por ventana y accesos
+remotos.** Diez pedidos de uso; plan en
+`docs/superpowers/plans/2026-08-26-logs-en-vivo-y-reinicios.md`. Tres eran
+preguntas con respuesta y no bugs: el idioma **sí** cambiaba (el control era
+invisible), la "carga" es el load average y le faltaba el rótulo, y `workshop`
+no estaba en la config.
+
+- **Modo en vivo en `/logs`**, prendido por default, con el **rowid como
+  cursor** (`LogsDesdeRowid`). No el `ts`: los logs entran en tandas de a un
+  minuto y una línea puede llegar fechada ANTES que otra ya mostrada — con
+  cursor por ts esas líneas caen bajo el piso y no las ve nadie nunca. La
+  consulta va `ORDER BY rowid ASC` para que el cursor avance pegado; con DESC,
+  un backlog más grande que el tope saltea el medio.
+- **Tope de la vista elegible**: 5000 / 10 000 / 25 000 (antes 500 fijo). El
+  export mantiene 10 000 como **piso**, no como techo.
+- **Dos columnas de reinicios** en containers: la de la ventana sale de
+  `started_at` (`ReiniciosEntre`), la de Docker sigue siendo `RestartCount`.
+- **Incidentes archivados** con toggle `?archivados=1`, y resolver/archivar
+  vuelven a donde estabas (campo `volver`, filtrado por `rutaPropia`).
+- **Accesos remotos por afuera**: `enlaces` en la config pone links en el nav
+  a Cockpit (terminal) y Guacamole (pantalla). **No se sirve una terminal desde
+  este proceso**: el panel no pide contraseña y el proceso habla con el socket
+  de Docker — servir un shell ahí convierte "llegué al puerto" en "tengo root".
+- **`workshop`** agregado como servicio. Ojo: **todo servicio configurado sale
+  también en la portada pública** — la lista blanca de la invariante 4 filtra
+  campos (`ServicioPublico`), no servicios.
+
 ## Required reading
 
 - **`docs/superpowers/specs/2026-08-08-server-status-design.md`** — spec vigente.
@@ -266,7 +293,13 @@ a tocarlos todos cada vez que se agrega una.
   escrita con un `200` arriba.** El error de `ExecuteTemplate` hay que mirarlo:
   si no, una plantilla rota se ve como una página cortada y no como un fallo.
 - **`ts` es `UNINDEXED` en la tabla FTS5 `logs`.** Una búsqueda sin texto es un
-  scan completo. Con 800 000 filas se nota, y no está arreglado.
+  scan completo. Con 800 000 filas se nota, y no está arreglado — y desde el
+  26/08/2026 el tope de la vista llega a 25 000 líneas, así que pesa más.
+- **`RestartCount` y "reinicios en la ventana" son dos columnas distintas y las
+  dos están bien.** La segunda sale de `started_at`; la primera es de Docker y
+  se resetea al recrear el container. Recrear cloudflared para actualizarlo el
+  26/08/2026 dejó `RestartCount=0` mientras `/events` sí registró el reinicio:
+  ese desacuerdo NO es un bug, es lo que cada número significa.
 - **Un solo container ruidoso te tapa la ventana entera.** El cron de pomodoro
   de study-master vuelca 33 líneas de SQL por minuto: 582 757 de las 802 200
   filas guardadas (73 %). Por eso un export de "24 h" cubría 4 h 54 m. Los
