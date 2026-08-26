@@ -1,0 +1,31 @@
+# Unit TEMPORAL: el experimento de egress IPv4 vs IPv6 del 26/08/2026.
+# Se saca cuando la medición cierra. Ver
+# docs/superpowers/plans/2026-08-26-egress-ipv6-vs-ipv4.md
+#
+# Va SEPARADA de server-status a propósito: producción sigue corriendo intacta
+# porque además es el control positivo de esta medición.
+[Unit]
+Description=Medición de egress IPv4 vs IPv6 (diagnóstico temporal)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=server-status
+Group=server-status
+StateDirectory=egress-probe
+ExecStart=/usr/local/bin/egress-probe -salida /var/lib/egress-probe/medicion.jsonl
+Restart=on-failure
+RestartSec=10s
+
+# No necesita nada del sistema más que la red y su propio directorio.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
