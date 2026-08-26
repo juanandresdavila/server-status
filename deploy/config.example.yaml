@@ -75,3 +75,24 @@ servicios:
     apikey_env: SUPABASE_GYM_ANON_KEY
     containers: [supabase-gym-kong, supabase-gym-auth, supabase-gym-rest,
                  supabase-gym-db, supabase-gym-meta, supabase-gym-studio]
+
+  - nombre: workshop
+    probe: https://workshop.jadd.com.ar/
+    containers: [workshop-app, workshop-db]
+
+# Accesos externos que el panel OFRECE en el nav y NO atiende: la terminal de
+# Cockpit, la pantalla por Guacamole.
+#
+# Que vivan afuera es la decisión, no una comodidad. El panel no pide
+# contraseña —toda su seguridad es "estás en el tailnet"— y este proceso habla
+# con el socket de Docker, que equivale a root en el host. Una terminal servida
+# desde acá convertiría "llegué al puerto del panel" en "tengo root", sin una
+# sola credencial de por medio. Cockpit y Guacamole tienen su propio login.
+#
+# Las URLs van acá y no en el código porque llevan la IP de tailnet, que no
+# entra a un repo público. Sin esta lista, el nav no muestra ningún enlace.
+enlaces: []
+#  - nombre: terminal
+#    url: https://<ip-tailnet>:9090
+#  - nombre: pantalla
+#    url: http://<ip-tailnet>:8088
