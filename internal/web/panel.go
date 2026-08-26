@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,13 @@ import (
 // deja el panel testeable sin base.
 type Datos interface {
 	BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error)
+	// El modo en vivo de /logs. El cursor es el rowid y no el ts: ver
+	// LogsDesdeRowid en store para por qué eso no es un detalle.
+	LogsDesdeRowid(texto, container string, niveles []string, desde int64, limite int) ([]model.LineaLog, int64, error)
+	MaxRowidLogs() (int64, error)
+	// Reinicios observados por container DENTRO de la ventana, que es otra
+	// cosa que el RestartCount de Docker que muestra la columna de al lado.
+	ReiniciosEntre(desde, hasta time.Time) (map[string]int, error)
 	UltimasHostSamples(n int) ([]model.HostSample, error)
 	UltimoEstadoContainers() ([]model.ContainerSample, error)
 	UltimoEstadoProbes() ([]model.ProbeResult, error)
@@ -65,6 +73,21 @@ type nav struct {
 	Activo    string // panel | eventos | logs | tail
 	Horas     int
 	Container string
+	Enlaces   []Enlace
+}
+
+// Enlace es un acceso externo que el nav ofrece y este proceso NO atiende: la
+// terminal de Cockpit, la pantalla por Guacamole.
+//
+// Que sean externos no es una comodidad, es la decisión. El panel no tiene
+// autenticación de ninguna clase —toda su seguridad es "estás en el tailnet"—
+// y este proceso habla con el socket de Docker, que equivale a root en el host.
+// Una terminal servida desde acá convertiría "llegué al puerto del panel" en
+// "tengo root", sin una sola contraseña de por medio. Cockpit y Guacamole
+// tienen su propio login, y por eso el acceso remoto vive afuera.
+type Enlace struct {
+	Nombre string
+	URL    string
 }
 
 // rangos son las opciones de tiempo en horas, iguales en las tres vistas a
@@ -82,6 +105,25 @@ type vistaPanel struct {
 	Incidentes []model.Incidente
 	Horas      int
 	Rangos     []int
+	// Reinicios observados en la ventana, por nombre de container. Es OTRA
+	// COSA que ContainerSample.Restarts, que es el RestartCount de Docker:
+	// ese solo cuenta los reinicios por política y una recreación lo pone en
+	// cero. Las dos columnas se muestran juntas porque responden preguntas
+	// distintas.
+	Reinicios map[string]int
+	// Archivados dice si la tabla de incidentes está mostrando también los
+	// archivados. Es un toggle y no una vista aparte: archivar es "ya lo vi",
+	// no "que no haya pasado".
+	Archivados bool
+	// Cores es contra qué se lee el load average. runtime.NumCPU() sirve porque
+	// este proceso corre como unit EN EL HOST y no adentro de un container: ahí
+	// vería los cores de la máquina igual, pero el número dejaría de significar
+	// lo mismo que el load average que se muestra al lado.
+	Cores int
+	// Volver es la URL a la que vuelven resolver y archivar. Sin esto las dos
+	// acciones mandaban a "/" y te sacaban de la vista en la que estabas —
+	// justo la de archivados, que es donde uno archiva de a varios.
+	Volver string
 }
 
 // enZona nunca recibe nil sin defenderse: t.In(nil) PANIQUEA, y un panic adentro
@@ -100,11 +142,18 @@ func enZona(t time.Time, loc *time.Location) time.Time {
 // argentina, y los campos desde/hasta interpretaban lo tecleado como UTC —
 // tres horas de corrimiento sobre lo que uno quiso pedir, sin nada que lo
 // indicara. Sale de la config, la misma zona que usa el resumen diario.
-func NuevoPanel(d Datos, zona *time.Location) http.Handler {
+func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 	if zona == nil {
 		zona = time.UTC
 	}
 	mux := http.NewServeMux()
+
+	// Los enlaces externos van en TODOS los navs, y el nav se arma en cinco
+	// handlers: pasar el slice a mano en cada uno es la forma segura de que
+	// uno quede sin ellos y parezca que el enlace desapareció.
+	armarNav := func(activo string, horas int, container string) nav {
+		return nav{Activo: activo, Horas: horas, Container: container, Enlaces: enlaces}
+	}
 
 	// ECharts sale del binario, no de un CDN: el panel vive en el tailnet y no
 	// puede depender de que el navegador llegue a internet para dibujar.
@@ -127,7 +176,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		plantillasIdioma[idiomaDe(w, r)].ExecuteTemplate(w, "tail.html", struct {
 			Nav       nav
 			Container string
-		}{nav{Activo: "tail", Horas: horasDe(r), Container: c}, c})
+		}{armarNav("tail", horasDe(r), c), c})
 	})
 
 	// El export acepta los mismos filtros que la vista y devuelve texto plano
@@ -139,8 +188,9 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		v := ventanaDe(r, time.Now(), zona)
 		niveles := nivelesDe(r)
 
+		tope := max(limiteDe(r), topeExport)
 		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"), niveles,
-			v.Desde, v.Hasta, topeExport)
+			v.Desde, v.Hasta, tope)
 		if err != nil {
 			http.Error(w, "no se pudieron buscar los logs", http.StatusInternalServerError)
 			return
@@ -161,9 +211,9 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		fmt.Fprintf(w, tr(idioma, "export-pedido"),
 			v.en(v.Desde).Format(time.DateTime), v.en(v.Hasta).Format(time.DateTime),
 			strings.Join(niveles, ","))
-		if len(lineas) == topeExport {
+		if len(lineas) == tope {
 			fmt.Fprintf(w, tr(idioma, "export-truncado"),
-				topeExport, v.en(lineas[len(lineas)-1].TS).Format(time.DateTime))
+				tope, v.en(lineas[len(lineas)-1].TS).Format(time.DateTime))
 			fmt.Fprint(w, tr(idioma, "export-consejo"))
 		}
 		fmt.Fprintf(w, tr(idioma, "export-lineas"), len(lineas))
@@ -183,20 +233,30 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 		v := ventanaDe(r, time.Now(), zona)
 		niveles := nivelesDe(r)
 
+		limite := limiteDe(r)
 		lineas, err := d.BuscarLogs(q.Get("q"), q.Get("container"), niveles,
-			v.Desde, v.Hasta, topeVista)
+			v.Desde, v.Hasta, limite)
 		if err != nil {
 			http.Error(w, "no se pudieron buscar los logs", http.StatusInternalServerError)
 			return
+		}
+
+		// El cursor del modo en vivo se siembra con lo último que hay AHORA, no
+		// con la línea más nueva que se está mostrando: si la vista quedó
+		// truncada por el tope, arrancar desde la más nueva mostrada haría que
+		// el primer poll trajera de golpe todo lo que el tope dejó afuera.
+		cursor, err := d.MaxRowidLogs()
+		if err != nil {
+			slog.Error("no se pudo sembrar el cursor del modo en vivo", "err", err)
 		}
 
 		// Truncar en silencio es lo que hizo que una consulta de 24 h se leyera
 		// como 24 h cubriendo 5. Si se llegó al tope hay que decirlo, y decir
 		// hasta dónde llega de verdad lo que se está mostrando.
 		truncado := ""
-		if len(lineas) == topeVista {
+		if len(lineas) == limite {
 			truncado = fmt.Sprintf(tr(idioma, "truncado-vista"),
-				topeVista,
+				limite,
 				v.en(lineas[len(lineas)-1].TS).Format(time.DateTime),
 				v.en(v.Desde).Format(time.DateTime))
 		}
@@ -222,12 +282,20 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			Lineas       []model.LineaLog
 			Niveles      []toggleNivel
 			Rangos       []int
+			Limite       int
+			Topes        []int
+			Cursor       int64
+			// EnVivo dice si el modo en vivo TIENE SENTIDO en esta vista, no si
+			// está prendido: con desde/hasta explícitos uno mira el pasado, y
+			// pegar líneas nuevas arriba mentiría sobre la ventana que pidió.
+			EnVivo bool
 		}{
-			Nav:  nav{Activo: "logs", Horas: v.Horas, Container: q.Get("container")},
+			Nav:  armarNav("logs", v.Horas, q.Get("container")),
 			Zona: zona,
 			Q:    q.Get("q"), Container: q.Get("container"),
 			Horas: v.Horas, Ventana: v, Truncado: truncado,
 			Containers: nombres, Lineas: lineas, Niveles: togglesDe(niveles), Rangos: rangos,
+			Limite: limite, Topes: topesVista, Cursor: cursor, EnVivo: !v.Explicita,
 		})
 		if errPlantilla != nil {
 			// El cuerpo ya se empezó a escribir, así que no se puede devolver un
@@ -235,6 +303,53 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			// rota se ve como una página a medias con status 200.
 			slog.Error("no se pudo renderizar los logs", "err", errPlantilla)
 		}
+	})
+
+	// El poll del modo en vivo. Es JSON y no SSE a propósito: SSE deja una
+	// conexión viva por pestaña abierta —el tail la necesita porque sigue a
+	// Docker en tiempo real, esto no— y se muere en cada suspensión del
+	// portátil sin reconectar solo. Un fetch cada tantos segundos se recupera
+	// de eso sin código.
+	//
+	// El piso real de frescura es el tick de un minuto de la ingesta: los logs
+	// entran a la base cuando el ciclo los vuelca, así que pollear cada un
+	// segundo serían sesenta consultas para un dato que se mueve una vez.
+	mux.HandleFunc("GET /api/logs/nuevos", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		cursor, _ := strconv.ParseInt(q.Get("cursor"), 10, 64)
+
+		lineas, siguiente, err := d.LogsDesdeRowid(q.Get("q"), q.Get("container"),
+			nivelesDe(r), cursor, topeVivo)
+		if err != nil {
+			http.Error(w, "no se pudieron buscar los logs", http.StatusInternalServerError)
+			return
+		}
+
+		// La hora se formatea acá y no en el navegador porque la zona del panel
+		// sale de la config y NO es la del proceso ni la del cliente: el VPS
+		// corre en Etc/UTC. Que el modo en vivo pinte una hora distinta a la de
+		// las líneas de abajo sería peor que no tener modo en vivo.
+		type lineaJSON struct {
+			Hora      string `json:"hora"`
+			Nivel     string `json:"nivel"`
+			Container string `json:"container"`
+			Linea     string `json:"linea"`
+		}
+		salida := struct {
+			Cursor int64       `json:"cursor"`
+			Lineas []lineaJSON `json:"lineas"`
+		}{Cursor: siguiente, Lineas: make([]lineaJSON, 0, len(lineas))}
+		for _, l := range lineas {
+			salida.Lineas = append(salida.Lineas, lineaJSON{
+				Hora:      enZona(l.TS, zona).Format("02/01/2006 15:04:05"),
+				Nivel:     l.Nivel,
+				Container: l.Container,
+				Linea:     l.Linea,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(salida)
 	})
 
 	// /events es la vista que faltaba: qué pasó y cuándo, en una sola línea de
@@ -274,7 +389,7 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			Novedades []Novedad
 			Rangos    []int
 		}{
-			Nav: nav{Activo: "events", Horas: v.Horas}, Zona: zona,
+			Nav: armarNav("events", v.Horas, ""), Zona: zona,
 			Ventana: v, Horas: v.Horas, Sevs: togglesSeveridad(sevs),
 			Novedades: armarNovedades(incidentes, eventos, errores, v.Desde, v.Hasta, sevs, idioma),
 			Rangos:    rangos,
@@ -308,7 +423,9 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 				http.Error(w, "no se pudo "+nombre, http.StatusInternalServerError)
 				return
 			}
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+			// Se vuelve a donde se estaba, no a "/": archivar de a varios desde
+			// la vista de archivados te expulsaba de la vista en cada click.
+			http.Redirect(w, r, rutaPropia(r.FormValue("volver")), http.StatusSeeOther)
 		}
 	}
 	mux.HandleFunc("POST /incidents/{id}/resolve", accion("resolver", d.CerrarIncidente))
@@ -372,7 +489,10 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		v := vistaPanel{Horas: horasDe(r), Rangos: rangos, Zona: zona}
-		v.Nav = nav{Activo: "panel", Horas: v.Horas}
+		v.Nav = armarNav("panel", v.Horas, "")
+		v.Archivados = r.URL.Query().Get("archivados") == "1"
+		v.Cores = runtime.NumCPU()
+		v.Volver = rutaPropia(r.URL.RequestURI())
 
 		hs, err := d.UltimasHostSamples(1)
 		if err != nil {
@@ -398,9 +518,19 @@ func NuevoPanel(d Datos, zona *time.Location) http.Handler {
 			return
 		}
 		for _, i := range incidentes {
-			if i.ArchivadoEn == nil && len(v.Incidentes) < 15 {
+			if (v.Archivados || i.ArchivadoEn == nil) && len(v.Incidentes) < 15 {
 				v.Incidentes = append(v.Incidentes, i)
 			}
+		}
+
+		// Los reinicios de la MISMA ventana que eligió el select de arriba: la
+		// pregunta "¿esto se reinició hoy?" no se contesta con un contador que
+		// arranca en el arranque del container y se resetea al recrearlo.
+		hasta := time.Now()
+		if v.Reinicios, err = d.ReiniciosEntre(hasta.Add(-time.Duration(v.Horas)*time.Hour), hasta); err != nil {
+			// No es motivo para tirar el panel entero abajo: sin el mapa la
+			// columna muestra cero, que es lo mismo que mostraba antes.
+			slog.Error("no se pudieron contar los reinicios", "err", err)
 		}
 
 		// Lo roto arriba, que es para lo que uno abre el panel; entre lo sano,
@@ -533,6 +663,17 @@ func togglesSeveridad(elegidas []string) []toggleNivel {
 	return out
 }
 
+// rutaPropia acepta solo rutas de este mismo servidor. Un "volver" que venga
+// del form es entrada de afuera: sin este filtro, "//otro.sitio" es una URL
+// absoluta para el navegador y el redirect se convierte en un open redirect.
+// El panel es privado, pero un open redirect privado sigue siendo uno.
+func rutaPropia(destino string) string {
+	if !strings.HasPrefix(destino, "/") || strings.HasPrefix(destino, "//") {
+		return "/"
+	}
+	return destino
+}
+
 // horasDe acota el rango. El parámetro es entrada de afuera aunque el panel
 // sea privado: cualquier basura cae al default en vez de romper.
 func horasDe(r *http.Request) int {
@@ -543,12 +684,38 @@ func horasDe(r *http.Request) int {
 	return n
 }
 
-// Los topes son distintos a propósito: la vista los renderiza como divs en un
-// navegador y el export es un archivo que se abre en otro lado.
-const (
-	topeVista  = 500
-	topeExport = 10000
-)
+// topesVista son las opciones del selector de tope en /logs. El de 500 que
+// había antes tapaba justo lo que uno iba a buscar: una ventana de 24 h de un
+// host con un container ruidoso se recortaba a menos de cinco horas.
+//
+// ⚠️ `ts` es UNINDEXED en la tabla FTS5 `logs`, así que una búsqueda sin texto
+// es un scan completo de ~800 000 filas y subir el tope lo empeora. Está
+// medido y asumido; el arreglo de fondo es otro índice, no un tope más bajo.
+var topesVista = []int{5000, 10000, 25000}
+
+// topeExport es un PISO, no un techo: el export es un archivo que se abre en
+// otro lado y aguanta más que un navegador renderizando divs. Si el selector
+// pide más que esto, manda el selector.
+const topeExport = 10000
+
+// topeVivo acota cuánto trae un solo poll del modo en vivo. Lo que no entra no
+// se pierde —el cursor avanza pegado— y entra en el poll siguiente.
+const topeVivo = 500
+
+// limiteDe lee el selector de tope. Cualquier valor fuera de la lista cae al
+// default, igual que horas: es entrada de afuera aunque el panel sea privado.
+func limiteDe(r *http.Request) int {
+	n, err := strconv.Atoi(r.URL.Query().Get("limite"))
+	if err != nil {
+		return topesVista[0]
+	}
+	for _, t := range topesVista {
+		if t == n {
+			return n
+		}
+	}
+	return topesVista[0]
+}
 
 // nivelesDe lee los toggles de nivel. Param repetido (?nivel=WARN&nivel=ERROR);
 // sin ninguno vale el default de la vista, que es todo menos TRACE — el que

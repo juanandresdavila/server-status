@@ -15,7 +15,16 @@ casualidad. Cada una lo incluye con {{ template "nav-css" }}.
   .nav a { color: inherit; text-decoration: none; opacity: .5; }
   .nav a:hover { opacity: .85; }
   .nav a.activo { opacity: 1; font-weight: 600; }
-  .nav .idioma { margin-left: auto; font-size: .8rem; letter-spacing: .05em; }
+  .nav .externo::after { content: " \2197"; font-size: .8em; opacity: .6; }
+  /* El toggle de idioma era una sola letra gris al 50 % pegada al borde: el
+     idioma SÍ cambiaba, pero no había forma de darse cuenta de que eso era un
+     control. Segmentado, con borde y el activo marcado, se lee como un botón. */
+  .nav .idiomas { margin-left: auto; display: inline-flex; border: 1px solid var(--borde);
+                  border-radius: .4rem; overflow: hidden; }
+  .nav .idiomas a { padding: .15rem .5rem; font-size: .75rem; letter-spacing: .05em;
+                    opacity: .5; }
+  .nav .idiomas a + a { border-left: 1px solid var(--borde); }
+  .nav .idiomas a.activo { opacity: 1; font-weight: 600; background: #8882; }
 {{ end }}
 
 {{ define "nav" }}
@@ -28,9 +37,21 @@ casualidad. Cada una lo incluye con {{ template "nav-css" }}.
   {{- with .Container }}
   <a href="/logs/tail?container={{ . }}"{{ if eq $.Activo "tail" }} class="activo" aria-current="page"{{ end }}>tail · {{ . }}</a>
   {{- end }}
-  {{/* El toggle reescribe ?lang= sobre la URL actual por JS y no con un href
-       fijo: un link armado en el server perdería q, container y desde/hasta.
-       El server guarda la elección en la cookie al ver el parámetro. */}}
-  <a class="idioma" href="#" onclick="const u=new URL(location);u.searchParams.set('lang','{{ t "idioma-otro" }}');location=u;return false">{{ t "idioma-etiqueta" }}</a>
+  {{/* Accesos que este proceso NO atiende: la terminal y la pantalla viven en
+       Cockpit y en Guacamole, que tienen su propio login. Acá adentro no puede
+       haber una terminal — el panel no pide contraseña y el proceso habla con
+       el socket de Docker. Salen de la config porque la URL lleva la IP de
+       tailnet. target=_blank para no perder la vista que uno estaba mirando. */}}
+  {{- range .Enlaces }}
+  <a class="externo" href="{{ .URL }}" target="_blank" rel="noopener">{{ .Nombre }}</a>
+  {{- end }}
+  {{/* Los dos idiomas, siempre visibles, con el activo marcado: así se ve que
+       es un control y en qué estado está. Reescriben ?lang= sobre la URL actual
+       por JS y no con un href fijo — un link armado en el server perdería q,
+       container, desde/hasta y el tope. El server guarda la elección en la
+       cookie al ver el parámetro. */}}
+  <span class="idiomas">
+    <a href="#"{{ if eq lang "es" }} class="activo" aria-current="true"{{ end }} onclick="const u=new URL(location);u.searchParams.set('lang','es');location=u;return false">ES</a><a href="#"{{ if eq lang "en" }} class="activo" aria-current="true"{{ end }} onclick="const u=new URL(location);u.searchParams.set('lang','en');location=u;return false">EN</a>
+  </span>
 </nav>
 {{ end }}

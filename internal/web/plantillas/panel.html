@@ -13,6 +13,7 @@
   h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .04em;
        opacity: .6; margin: 2rem 0 .75rem; }
   .sub { opacity: .6; font-size: .85rem; margin-bottom: 1.5rem; }
+  .sub .unidad { font-size: .8em; opacity: .8; }
   .tarjetas { display: grid; gap: .75rem;
               grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
   .tarjeta { border: 1px solid var(--borde); border-radius: .5rem; padding: .75rem .9rem; }
@@ -47,6 +48,9 @@
                    background: transparent; color: inherit; cursor: pointer; }
   td form button:hover { border-color: currentColor; }
   .rangos a { margin-right: .75rem; font-size: .85rem; }
+  .archivado { font-size: .7rem; text-transform: uppercase; letter-spacing: .04em;
+               opacity: .5; border: 1px solid var(--borde); border-radius: .3rem;
+               padding: .05rem .3rem; }
 {{ template "nav-css" }}
 </style>
 </head>
@@ -57,7 +61,12 @@
 <h1>server-status</h1>
 <div class="sub">
   uptime {{ printf "%.0f" .Host.Uptime.Hours }} h ·
-  {{ t "carga" }} {{ printf "%.2f" .Host.Load1 }} / {{ printf "%.2f" .Host.Load5 }} / {{ printf "%.2f" .Host.Load15 }} ·
+  {{/* El load average no tiene unidad y sin decirlo no se puede leer: son
+       procesos corriendo o esperando disco, promediados a 1, 5 y 15 minutos, y
+       la referencia es la cantidad de núcleos — con 6 vCPU, 6.00 es la máquina
+       justa. Antes decía "carga 0.48 / 0.55 / 0.54" y podía ser cualquier cosa. */}}
+  {{ t "carga" }} {{ printf "%.2f" .Host.Load1 }} / {{ printf "%.2f" .Host.Load5 }} / {{ printf "%.2f" .Host.Load15 }}
+  <span class="unidad">{{ printf (t "carga-detalle") .Cores }}</span> ·
   {{ t "actualizado" }} {{ hora .Host.TS .Zona }}
 </div>
 
@@ -105,7 +114,13 @@
 
 <h2>Containers</h2>
 <table>
-  <tr><th>{{ t "nombre" }}</th><th>{{ t "estado" }}</th><th>{{ t "salud" }}</th><th>CPU</th><th>{{ t "memoria" }}</th><th>{{ t "reinicios" }}</th></tr>
+  {{/* Dos columnas de reinicios porque son dos preguntas distintas. La de la
+       ventana sale de started_at y cuenta lo que arrancó de nuevo en el rango
+       elegido arriba; la de Docker es RestartCount, que SOLO cuenta reinicios
+       por política y se resetea al recrear el container. Recrear cloudflared
+       para actualizarlo dejaba la columna vieja en 0 mientras /events sí
+       registraba el reinicio. */}}
+  <tr><th>{{ t "nombre" }}</th><th>{{ t "estado" }}</th><th>{{ t "salud" }}</th><th>CPU</th><th>{{ t "memoria" }}</th><th>{{ t "reinicios-vent" }}</th><th>{{ t "reinicios-dock" }}</th></tr>
   {{ range .Containers }}
   <tr>
     {{/* El nombre lleva a sus logs: ver un container en unhealthy y tener que
@@ -115,17 +130,24 @@
     <td class="{{ if eq .Health "unhealthy" }}mal{{ else if eq .Health "healthy" }}bien{{ end }}">{{ .Health }}</td>
     <td>{{ printf "%.2f" .CPUPct }}%</td>
     <td>{{ printf "%.2f" (mib .MemBytes) }} MiB</td>
+    {{ $r := index $.Reinicios .Name }}
+    <td class="{{ if gt $r 0 }}tibio{{ end }}" data-v="{{ $r }}">{{ $r }}</td>
     <td class="{{ if gt .Restarts 0 }}tibio{{ end }}">{{ .Restarts }}</td>
   </tr>
   {{ end }}
 </table>
 
 <h2>{{ t "incidentes" }}</h2>
+{{/* Toggle y no vista aparte: archivar es "ya lo vi", no "que no haya pasado". */}}
+<div class="rangos">
+  {{ if .Archivados }}<a href="?horas={{ .Horas }}">{{ t "ocultar-archiv" }}</a>
+  {{ else }}<a href="?horas={{ .Horas }}&amp;archivados=1">{{ t "ver-archivados" }}</a>{{ end }}
+</div>
 <table>
   <tr><th>{{ t "sujeto" }}</th><th>{{ t "severidad" }}</th><th>{{ t "desde-col" }}</th><th>{{ t "hasta-col" }}</th><th>{{ t "detalle" }}</th><th></th></tr>
   {{ range .Incidentes }}
   <tr>
-    <td>{{ .Sujeto }}</td>
+    <td>{{ .Sujeto }}{{ if .ArchivadoEn }} <span class="archivado">{{ t "archivado" }}</span>{{ end }}</td>
     <td class="{{ if eq .Severidad "critical" }}mal{{ else }}tibio{{ end }}">{{ .Severidad }}</td>
     {{/* data-v: la fecha "02/01 15:04" ordenada como texto pone el día antes
          que el mes; el epoch ordena bien. Un incidente abierto sigue vigente,
@@ -138,10 +160,14 @@
          el motor lo reabre); cerrado → archivar (lo saca de esta tabla, la
          historia queda en /eventos). */}}
     <td>
+      {{/* volver lleva la URL actual: sin esto las dos acciones redirigían a
+           "/" y te expulsaban de la vista de archivados en cada click, que es
+           justo donde uno archiva de a varios. El server solo acepta rutas
+           propias — un "volver" del form es entrada de afuera. */}}
       {{ if not .CerradoEn }}
-      <form method="post" action="/incidents/{{ .ID }}/resolve"><button>{{ t "resolver" }}</button></form>
-      {{ else }}
-      <form method="post" action="/incidents/{{ .ID }}/archive"><button>{{ t "archivar" }}</button></form>
+      <form method="post" action="/incidents/{{ .ID }}/resolve"><input type="hidden" name="volver" value="{{ $.Volver }}"><button>{{ t "resolver" }}</button></form>
+      {{ else if not .ArchivadoEn }}
+      <form method="post" action="/incidents/{{ .ID }}/archive"><input type="hidden" name="volver" value="{{ $.Volver }}"><button>{{ t "archivar" }}</button></form>
       {{ end }}
     </td>
   </tr>

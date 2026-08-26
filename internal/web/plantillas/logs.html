@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>logs · server-status</title>
 <style>
-  :root { color-scheme: light dark; --borde:#8883; --err:#c0392b; --warn:#b7791f; }
+  :root { color-scheme: light dark; --borde:#8883; --err:#c0392b; --warn:#b7791f; --ok:#1a7f4b; }
   * { box-sizing: border-box; }
   body { font: 15px/1.5 system-ui, -apple-system, sans-serif; margin: 0; padding: 1.5rem; }
   h1 { font-size: 1.25rem; margin: 0 0 1rem; }
@@ -40,13 +40,34 @@
   .rango label { font-size: .8rem; opacity: .6; }
   .aviso { border: 1px solid var(--warn); border-left-width: 3px; border-radius: .4rem;
            padding: .6rem .8rem; margin-bottom: 1rem; font-size: .88rem; }
+  /* El toggle de en vivo vive FUERA del form a propósito: adentro, el submit
+     automático de los filtros lo trataría como un filtro más y recargaría la
+     página cada vez que se lo prende o apaga. */
+  .vivo { font-size: .82rem; display: inline-flex; align-items: center; gap: .35rem;
+          margin-left: .75rem; cursor: pointer; user-select: none; opacity: .5;
+          vertical-align: middle; }
+  .vivo input { position: absolute; opacity: 0; pointer-events: none; }
+  .vivo .punto { width: .5rem; height: .5rem; border-radius: 50%;
+                 background: currentColor; opacity: .3; }
+  .vivo:has(input:checked) { opacity: 1; color: var(--ok); }
+  .vivo:has(input:checked) .punto { opacity: 1; animation: latir 2s ease-in-out infinite; }
+  @keyframes latir { 50% { opacity: .25; } }
+  /* Las líneas que llegaron mientras mirabas se destacan un momento y después
+     se apagan: sin eso no hay forma de distinguir lo nuevo de lo que ya estaba. */
+  @keyframes entrar { from { background: #8883; } to { background: transparent; } }
+  .l.nueva { animation: entrar 3s ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    .vivo .punto, .l.nueva { animation: none; }
+  }
 {{ template "nav-css" }}
 </style>
 </head>
 <body>
 {{ template "nav" .Nav }}
 
-<h1>logs</h1>
+{{/* Solo con ventana relativa. Con desde/hasta explícitos uno está mirando el
+     pasado, y pegar líneas nuevas arriba mentiría sobre la ventana pedida. */}}
+<h1>logs{{ if .EnVivo }}<label class="vivo"><input type="checkbox" id="vivo"><span class="punto"></span>{{ t "en-vivo-toggle" }}</label>{{ end }}</h1>
 
 <form method="get">
   <input name="q" value="{{ .Q }}" placeholder="{{ t "buscar-ph" }}" autofocus>
@@ -69,6 +90,17 @@
     <option value="{{ . }}" {{ if eq . $.Horas }}selected{{ end }}>{{ t (printf "rango-%d" .) }}</option>
     {{ end }}
   </select>
+  {{/* El tope de 500 que había antes tapaba justo lo que uno venía a buscar:
+       con un container ruidoso, una ventana de 24 h se recortaba a menos de
+       cinco horas. */}}
+  <span class="rango">
+    <label for="limite">{{ t "tope" }}</label>
+    <select name="limite" id="limite">
+      {{ range .Topes }}
+      <option value="{{ . }}" {{ if eq . $.Limite }}selected{{ end }}>{{ . }}</option>
+      {{ end }}
+    </select>
+  </span>
   <span class="rango">
     <label for="desde">{{ t "desde" }}</label>
     <input type="datetime-local" id="desde" name="desde" value="{{ .Ventana.ValorDesde }}">
@@ -106,6 +138,105 @@
     q.addEventListener('input', () => { clearTimeout(espera); espera = setTimeout(() => form.submit(), 700) })
     // Tras la recarga el foco vuelve al final de lo tipeado, no al principio.
     q.setSelectionRange(q.value.length, q.value.length)
+  }
+
+  // Modo en vivo. Es un poll y no SSE: SSE deja una conexión viva por pestaña
+  // y no se recupera solo de una suspensión del portátil. El piso real de
+  // frescura es el tick de un minuto de la ingesta, así que cada 10 s alcanza
+  // de sobra — pollear más seguido son consultas de más sobre una tabla FTS5
+  // de 800 000 filas para un dato que se mueve una vez por minuto.
+  const vivo = document.getElementById('vivo')
+  if (vivo) {
+    const pre = document.querySelector('pre')
+    const limite = {{ .Limite }}
+    // Se siembra con el rowid más alto que había al renderizar, no con la línea
+    // más nueva en pantalla: si la vista quedó truncada por el tope, arrancar
+    // desde lo mostrado traería de golpe todo lo que el tope dejó afuera.
+    let cursor = {{ .Cursor }}
+    let pidiendo = false
+
+    // Prendido por default; la elección sobrevive a la recarga que hace
+    // cualquier cambio de filtro.
+    const guardado = localStorage.getItem('logs-en-vivo')
+    vivo.checked = guardado === null || guardado === '1'
+    vivo.addEventListener('change', () => {
+      localStorage.setItem('logs-en-vivo', vivo.checked ? '1' : '0')
+      if (vivo.checked) traer()
+    })
+
+    // Los MISMOS filtros que la vista, leídos del form y no de la URL: el texto
+    // puede haber cambiado sin haber recargado todavía por el debounce.
+    const params = () => {
+      const p = new URLSearchParams({ cursor })
+      if (q && q.value) p.set('q', q.value)
+      const c = form.querySelector('select[name=container]')
+      if (c && c.value) p.set('container', c.value)
+      for (const n of form.querySelectorAll('input[name=nivel]:checked')) p.append('nivel', n.value)
+      return p
+    }
+
+    // Se arma con textContent y nunca con innerHTML: una línea de log es texto
+    // que escribió otro proceso, y acá entra sin pasar por el escapado de la
+    // plantilla.
+    const pintar = l => {
+      const div = document.createElement('div')
+      div.className = 'l lv-' + l.nivel + ' nueva'
+      for (const [clase, texto] of [['t', l.hora], ['n n-' + l.nivel, l.nivel],
+                                    ['c', l.container], ['m', l.linea]]) {
+        const span = document.createElement('span')
+        span.className = clase
+        span.textContent = texto
+        div.appendChild(span)
+      }
+      return div
+    }
+
+    const traer = async () => {
+      if (!vivo.checked || pidiendo || document.hidden) return
+      pidiendo = true
+      try {
+        const r = await fetch('/api/logs/nuevos?' + params())
+        if (!r.ok) return
+        const d = await r.json()
+        cursor = d.cursor
+        if (!d.lineas.length) return
+
+        pre.querySelector('.vacio')?.remove()
+        // Vienen de la más nueva a la más vieja y se insertan AL REVÉS, de la
+        // más vieja a la más nueva. Cada insertBefore va contra pre.firstChild,
+        // así que el último insertado queda arriba de todo: recorrer el array
+        // en su orden natural deja la tanda invertida, con la línea más vieja
+        // encabezando el visor. Se vio en el preview y ningún test de Go podía
+        // verlo — esto pasa entero en el navegador.
+        for (let i = d.lineas.length - 1; i >= 0; i--) {
+          const div = pintar(d.lineas[i])
+          pre.insertBefore(div, pre.firstChild)
+          // Y su salto de línea adelante, como lo escribe la plantilla. El
+          // contenedor es un <pre> con white-space: pre-wrap, así que ese "\n"
+          // ES parte del interlineado: sin él las líneas que llegan en vivo se
+          // ven más juntas que las de abajo y la lista queda despareja.
+          pre.insertBefore(document.createTextNode('\n'), div)
+        }
+
+        // El DOM se poda al mismo tope que pidió la vista: una pestaña abierta
+        // toda la noche acumularía líneas hasta quedarse sin memoria. Se va
+        // también el salto de línea de cada una, o el visor termina con una
+        // cola de renglones en blanco que crece sola.
+        const filas = pre.querySelectorAll('.l')
+        for (let i = limite; i < filas.length; i++) {
+          const salto = filas[i].previousSibling
+          if (salto && salto.nodeType === Node.TEXT_NODE) salto.remove()
+          filas[i].remove()
+        }
+      } catch { /* un poll perdido no es nada: el cursor no avanzó */ }
+      finally { pidiendo = false }
+    }
+
+    setInterval(traer, 10000)
+    // Con la pestaña oculta no se pollea; al volver se pone al día enseguida
+    // en vez de esperar el próximo intervalo.
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) traer() })
+    traer()
   }
 </script>
 </body>
