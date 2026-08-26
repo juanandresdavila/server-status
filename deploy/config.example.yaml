@@ -48,7 +48,7 @@ zona: America/Argentina/Buenos_Aires
 # Cada servicio se prueba por su URL PÚBLICA, no por localhost: así el probe
 # también verifica Cloudflare, el túnel y Caddy — el camino que usa la gente.
 servicios:
-  - nombre: sitio
+  - nombre: jadd.com.ar
     probe: https://jadd.com.ar/
     containers: [caddy, cloudflared]
 
