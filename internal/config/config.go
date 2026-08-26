@@ -51,6 +51,20 @@ type Config struct {
 	// BackupPath es la copia consistente que se lleva el restic de la Mac
 	// mini. Vacío la desactiva.
 	BackupPath string `yaml:"backup_path"`
+
+	// Enlaces son accesos externos que el panel OFRECE en el nav y no atiende:
+	// la terminal de Cockpit, la pantalla de Guacamole. Salen de la config y no
+	// del código por dos razones: la URL lleva la IP de tailnet —que no entra a
+	// un repo público— y porque el día que uno de esos servicios no exista, la
+	// forma de sacarlo del panel tiene que ser borrar una línea de config y no
+	// recompilar.
+	Enlaces []Enlace `yaml:"enlaces"`
+}
+
+// Enlace es un acceso externo del nav: un nombre y adónde va.
+type Enlace struct {
+	Nombre string `yaml:"nombre"`
+	URL    string `yaml:"url"`
 }
 
 // Servicio es una cosa que se puede caer, con la URL que lo prueba y los
