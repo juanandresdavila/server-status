@@ -211,6 +211,6 @@ func correrAnalisis(ruta string) error {
 	if len(rs) == 0 {
 		return fmt.Errorf("%s no tiene ni un registro legible", ruta)
 	}
-	fmt.Print(egress.Informe(egress.Resumir(rs), rotas))
+	fmt.Print(egress.Informe(rs, rotas))
 	return nil
 }

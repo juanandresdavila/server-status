@@ -26,15 +26,17 @@ egress-linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(EGRESS) ./cmd/egress-probe
 
 egress-deploy: egress-linux
-	scp $(EGRESS) vps:/tmp/egress-probe
-	scp deploy/egress-probe.service vps:/tmp/egress-probe.service
+	deploy/subir.sh $(EGRESS) /tmp/egress-probe
+	deploy/subir.sh deploy/egress-probe.service /tmp/egress-probe.service
 	ssh vps 'sudo install -m 0755 /tmp/egress-probe /usr/local/bin/egress-probe && \
 	         sudo install -m 0644 /tmp/egress-probe.service /etc/systemd/system/egress-probe.service && \
 	         sudo systemctl daemon-reload && sudo systemctl enable --now egress-probe && \
 	         rm -f /tmp/egress-probe /tmp/egress-probe.service'
 
+# La subida va por deploy/subir.sh y no por scp pelado: scp puede cortarse a
+# mitad y devolver 0 igual. Un server-status truncado es un restart-loop.
 deploy: linux
-	scp $(LINUX) vps:/tmp/server-status
+	deploy/subir.sh $(LINUX) /tmp/server-status
 	ssh vps 'sudo install -m 0755 /tmp/server-status /usr/local/bin/server-status && sudo systemctl restart server-status && rm -f /tmp/server-status'
 
 hooks:
