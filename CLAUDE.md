@@ -93,6 +93,26 @@ no estaba en la config.
   también en la portada pública** — la lista blanca de la invariante 4 filtra
   campos (`ServicioPublico`), no servicios.
 
+**Medición de egress IPv4 vs IPv6 (26/08/2026) — EN CURSO.** El 26/08 los
+probes salientes saltaron a **23 resets** contra una base de **0,31/día**.
+Todas las fallas de red del histórico son por IPv6, pero eso no prueba nada: el
+VPS sale siempre por IPv6 y **nunca se intentó por IPv4**, así que no hay
+contrafactual. `cmd/egress-probe` lo construye — factorial 2×2 de familia ×
+reuso de conexión, más un brazo de cadencia de 30 s.
+
+- Plan y **regla de decisión pre-registrada** (escrita antes de los datos):
+  `docs/superpowers/plans/2026-08-26-egress-ipv6-vs-ipv4.md`. La regla se aplica
+  sola: `egress-probe -analizar <jsonl>`.
+- **Producción no se toca y ES el control positivo**: si `probe_results` registra
+  resets en la ventana y el brazo `v6-ka` no, el instrumento no es fiel y no hay
+  conclusión sobre la red.
+- Corre como unit **aparte** (`deploy/egress-probe.service`, `make
+  egress-deploy`), salida en `/var/lib/egress-probe/medicion.jsonl`. **Es
+  temporal: sacar la unit cuando cierre la medición.**
+- 🚨 **El cambio de código va DESPUÉS de la medición.** Si el resultado es el
+  reuso de conexiones y no la familia, forzar `tcp4` "funcionaría" igual —por
+  accidente, al reiniciar el pool— dejando la causa intacta.
+
 ## Required reading
 
 - **`docs/superpowers/specs/2026-08-08-server-status-design.md`** — spec vigente.
