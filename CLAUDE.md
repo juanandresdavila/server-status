@@ -287,6 +287,19 @@ a tocarlos todos cada vez que se agrega una.
   `veth*`: ese tráfico ya está contado del lado de la interfaz real.
 - **La memoria usada se calcula contra `MemAvailable`, no contra `MemFree`.** El
   page cache figura como ocupado pero el kernel lo suelta cuando hace falta.
+- **`scp` puede cortarse a mitad y devolver 0 igual.** El 26/08/2026 el binario
+  de `egress-probe` llegó al VPS en **2,52 MB de 9,30 MB** por el enlace de
+  Tailscale, con `scp` reportando éxito; al ejecutarlo, segfault. Si eso le pasa
+  a `server-status`, systemd queda en restart-loop y el monitoreo se muere justo
+  cuando hace falta que avise. Por eso `make deploy` y `make egress-deploy`
+  suben por **`deploy/subir.sh`**, que compara el sha256 y reintenta. Ese mismo
+  día el enlace estuvo lento: una subida de 9 MB tardó minutos y otra
+  directamente timeouteó.
+- **Para reemplazar un binario que está corriendo hay que renombrar, no
+  sobrescribir.** Linux devuelve `ETXTBSY` al escribir sobre un ejecutable en
+  uso. `install` a un nombre temporal y después `mv -f` es atómico y deja al
+  proceso viejo con su inode — así se actualizó `egress-probe` sin cortar la
+  medición en curso.
 - **`RestartCount` NO dice si un container se reinició.** Solo cuenta los
   reinicios por *política*: un arranque junto con el host lo deja igual y una
   recreación con `compose up -d` lo resetea a cero. Verificado el 22/08/2026

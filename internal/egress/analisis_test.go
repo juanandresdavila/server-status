@@ -1,6 +1,7 @@
 package egress_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -209,5 +210,111 @@ func TestDesempate30sNoConcluyeSiLosDosFallan(t *testing.T) {
 	got := egress.Desempate30s(m)
 	if strings.Contains(got, "entre 30 y 60 s") {
 		t.Errorf("Desempate30s = %q: los dos fallan igual, no puede localizar nada", got)
+	}
+}
+
+// --- Enmienda del 26/08/2026: la unidad de análisis es el tick, no el intento.
+
+// Un blip corta los cinco destinos en el mismo segundo. Contarlos como cinco
+// observaciones independientes le da a Fisher cinco veces la evidencia que hay.
+func TestResumirPorTickCuentaUnBlipUnaSolaVez(t *testing.T) {
+	var rs []egress.Registro
+	// un tick entero fallado: cinco destinos, mismo segundo
+	for _, d := range []string{"a", "b", "c", "d", "e"} {
+		rs = append(rs, egress.Registro{
+			TS: "2026-08-26T21:03:30.021Z", Brazo: "v6-ka-30s", Red: "tcp6",
+			Destino: d, Clase: egress.ClaseReset, Remota: "[2606:4700::1]:443",
+		})
+	}
+	// y un tick sano
+	for _, d := range []string{"a", "b", "c", "d", "e"} {
+		rs = append(rs, egress.Registro{
+			TS: "2026-08-26T21:04:00.021Z", Brazo: "v6-ka-30s", Red: "tcp6",
+			Destino: d, Clase: egress.ClaseOK, Remota: "[2606:4700::1]:443",
+		})
+	}
+
+	porIntento := egress.Resumir(rs)["v6-ka-30s"]
+	if porIntento.Fallas != 5 || porIntento.Intentos != 10 {
+		t.Fatalf("por intento: %d/%d, quería 5/10", porIntento.Fallas, porIntento.Intentos)
+	}
+
+	porTick := egress.ResumirPorTick(rs, false)["v6-ka-30s"]
+	if porTick.Fallas != 1 || porTick.Intentos != 2 {
+		t.Errorf("por tick: %d/%d, quería 1/2 — el blip es UN evento", porTick.Fallas, porTick.Intentos)
+	}
+	if porTick.Resets != 1 {
+		t.Errorf("resets del tick = %d, quería 1", porTick.Resets)
+	}
+}
+
+// Los intentos de un mismo tick pueden caer de los dos lados del segundo. Si el
+// agrupamiento truncara en vez de redondear, un blip se partiría en dos ticks
+// fallados y volvería a inflar el conteo.
+func TestResumirPorTickAgrupaAunqueElTickCruceElSegundo(t *testing.T) {
+	rs := []egress.Registro{
+		{TS: "2026-08-26T21:03:59.998Z", Brazo: "v6-ka", Red: "tcp6", Clase: egress.ClaseReset},
+		{TS: "2026-08-26T21:04:00.003Z", Brazo: "v6-ka", Red: "tcp6", Clase: egress.ClaseReset},
+	}
+	if got := egress.ResumirPorTick(rs, false)["v6-ka"]; got.Intentos != 1 || got.Fallas != 1 {
+		t.Errorf("por tick: %d/%d, quería 1/1", got.Fallas, got.Intentos)
+	}
+}
+
+// El brazo de 30 s es el ÚNICO que mira los ticks :30. Comparar su tasa contra
+// la de v6-ka mezcla "cuánto ocio tenía la conexión" con "qué instantes miró".
+// Restringido a :00 los dos tienen la misma exposición.
+func TestResumirPorTickPuedeQuedarseSoloConLosTicksDelMinuto(t *testing.T) {
+	rs := []egress.Registro{
+		{TS: "2026-08-26T21:03:00.021Z", Brazo: "v6-ka-30s", Red: "tcp6", Clase: egress.ClaseOK},
+		{TS: "2026-08-26T21:03:30.021Z", Brazo: "v6-ka-30s", Red: "tcp6", Clase: egress.ClaseReset},
+		{TS: "2026-08-26T21:04:00.021Z", Brazo: "v6-ka-30s", Red: "tcp6", Clase: egress.ClaseOK},
+		{TS: "2026-08-26T21:04:30.021Z", Brazo: "v6-ka-30s", Red: "tcp6", Clase: egress.ClaseReset},
+	}
+
+	todos := egress.ResumirPorTick(rs, false)["v6-ka-30s"]
+	if todos.Intentos != 4 || todos.Fallas != 2 {
+		t.Fatalf("todos los ticks: %d/%d, quería 2/4", todos.Fallas, todos.Intentos)
+	}
+
+	soloMinuto := egress.ResumirPorTick(rs, true)["v6-ka-30s"]
+	if soloMinuto.Intentos != 2 || soloMinuto.Fallas != 0 {
+		t.Errorf("solo ticks :00: %d/%d, quería 0/2 — las fallas eran todas del offset :30",
+			soloMinuto.Fallas, soloMinuto.Intentos)
+	}
+}
+
+// La corrección tiene que cambiar el veredicto en el caso que la motivó: once
+// intentos fallados que en realidad son cinco momentos no alcanzan para nada.
+func TestPorTickElCasoQueMotivoLaEnmiendaNoConcluye(t *testing.T) {
+	var rs []egress.Registro
+	destinos := []string{"a", "b", "c", "d", "e"}
+	agregar := func(ts, brazo string, falla bool) {
+		for _, d := range destinos {
+			c := egress.ClaseOK
+			if falla {
+				c = egress.ClaseReset
+			}
+			rs = append(rs, egress.Registro{TS: ts, Brazo: brazo, Red: "tcp6", Destino: d, Clase: c})
+		}
+	}
+	// cuatro blips en v6-ka-30s (cuatro destinos cada uno) y uno en v6-ka
+	for _, ts := range []string{"2026-08-26T21:03:30Z", "2026-08-26T21:04:30Z",
+		"2026-08-26T21:05:30Z", "2026-08-26T21:14:30Z"} {
+		agregar(ts, "v6-ka-30s", true)
+	}
+	agregar("2026-08-26T21:05:00Z", "v6-ka", true)
+	// y cien ticks sanos por brazo
+	for i := range 100 {
+		ts := fmt.Sprintf("2026-08-26T22:%02d:00Z", i%60)
+		for _, br := range []string{"v6-ka", "v4-ka", "v6-fresh", "v4-fresh", "v6-ka-30s"} {
+			agregar(ts, br, false)
+		}
+	}
+
+	porTick := egress.ResumirPorTick(rs, false)
+	if got := egress.Concluir(porTick); got.Codigo != egress.VerdNoConcluye {
+		t.Errorf("Concluir por tick = %q (%s), quería %q: cinco momentos no alcanzan",
+			got.Codigo, got.Detalle, egress.VerdNoConcluye)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Umbrales de la regla pre-registrada. Están acá y no sueltos en el análisis
@@ -76,6 +77,93 @@ func LeerJSONL(r io.Reader) ([]Registro, int, error) {
 		rs = append(rs, reg)
 	}
 	return rs, rotas, sc.Err()
+}
+
+// BucketTick es la cadencia más fina del experimento. Redondear a ella agrupa
+// los intentos de un mismo tick aunque uno caiga del otro lado del segundo.
+const BucketTick = 30 * time.Second
+
+// TickDe devuelve el instante del tick al que pertenece un intento.
+func TickDe(r Registro) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339Nano, r.TS)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.Round(BucketTick), true
+}
+
+// AlineadoAlMinuto dice si el tick cae en el offset :00, que es el único que
+// miran TODOS los brazos. Los ticks :30 los ve solo v6-ka-30s.
+func AlineadoAlMinuto(t time.Time) bool { return t.Second() == 0 }
+
+// ResumirPorTick cuenta TICKS, no intentos: un tick falla si falló alguno de
+// sus destinos.
+//
+// Es la corrección del 26/08/2026 a la regla pre-registrada. Un blip corta los
+// cinco destinos en el mismo segundo, así que contarlos como cinco
+// observaciones independientes le da a Fisher cinco veces la evidencia que hay
+// — y Fisher supone independencia. La unidad tiene que ser el tick.
+//
+// Con soloAlMinuto, se queda con los ticks :00. Ahí v6-ka y v6-ka-30s tienen
+// exposición IDÉNTICA —mismos instantes, mismos destinos— y difieren solo en el
+// ocio (60 s contra 30 s), que es lo único que el desempate quiere medir.
+func ResumirPorTick(rs []Registro, soloAlMinuto bool) map[string]ResumenBrazo {
+	type clave struct {
+		brazo string
+		tick  time.Time
+	}
+	falla := map[clave]bool{}
+	clase := map[clave]Clase{}
+	inconsistentes := map[string]int{}
+	red := map[string]string{}
+
+	for _, r := range rs {
+		t, ok := TickDe(r)
+		if !ok || (soloAlMinuto && !AlineadoAlMinuto(t)) {
+			continue
+		}
+		k := clave{r.Brazo, t}
+		if _, visto := falla[k]; !visto {
+			falla[k] = false
+		}
+		red[r.Brazo] = r.Red
+		if r.Clase.EsFalla() {
+			falla[k] = true
+			// La clase del tick es la del primer destino que falló: alcanza
+			// para separar resets de timeouts, que es para lo que se usa.
+			if _, hay := clase[k]; !hay {
+				clase[k] = r.Clase
+			}
+		}
+		if fr := r.FamiliaReal(); fr != "" && fr != familiaDeRed(r.Red) {
+			inconsistentes[r.Brazo]++
+		}
+	}
+
+	m := map[string]ResumenBrazo{}
+	for k, hubo := range falla {
+		s := m[k.brazo]
+		s.Brazo = k.brazo
+		s.Intentos++
+		if hubo {
+			s.Fallas++
+			switch clase[k] {
+			case ClaseReset:
+				s.Resets++
+			case ClaseTimeout:
+				s.Timeouts++
+			default:
+				s.Otras++
+			}
+		}
+		m[k.brazo] = s
+	}
+	for b, n := range inconsistentes {
+		s := m[b]
+		s.Inconsistentes = n
+		m[b] = s
+	}
+	return m
 }
 
 func Resumir(rs []Registro) map[string]ResumenBrazo {
@@ -234,8 +322,36 @@ func Desempate30s(m map[string]ResumenBrazo) string {
 		v6ka.Fallas, v6ka.Intentos, corto.Fallas, corto.Intentos, p)
 }
 
-// Informe arma la salida legible del modo -analizar.
-func Informe(m map[string]ResumenBrazo, rotas int) string {
+// Informe arma la salida legible del modo -analizar. Muestra las DOS lecturas
+// —por intento, como se pre-registró, y por tick, que es la corregida— y saca
+// el veredicto de la segunda.
+func Informe(rs []Registro, rotas int) string {
+	var b strings.Builder
+
+	fmt.Fprint(&b, "POR INTENTO (como se pre-registró; las fallas de un mismo blip no son independientes)\n")
+	fmt.Fprint(&b, tabla(Resumir(rs)))
+
+	porTick := ResumirPorTick(rs, false)
+	fmt.Fprint(&b, "\nPOR TICK (corregida: un tick falla si falló alguno de sus destinos)\n")
+	fmt.Fprint(&b, tabla(porTick))
+
+	if rotas > 0 {
+		fmt.Fprintf(&b, "\n(%d líneas ilegibles, ignoradas)\n", rotas)
+	}
+
+	v := Concluir(porTick)
+	fmt.Fprintf(&b, "\nveredicto (sobre los ticks): %s\n  %s\n", v.Codigo, v.Detalle)
+
+	fmt.Fprintf(&b, "\ndesempate de 30 s, solo en los ticks :00 —donde los dos brazos miran\n"+
+		"los mismos instantes y difieren solo en el ocio—:\n  %s\n",
+		Desempate30s(ResumirPorTick(rs, true)))
+
+	fmt.Fprint(&b, "\nla regla es la de docs/superpowers/plans/2026-08-26-egress-ipv6-vs-ipv4.md,\n"+
+		"escrita antes de que existieran estos datos, con la enmienda del 26/08 anotada ahí.\n")
+	return b.String()
+}
+
+func tabla(m map[string]ResumenBrazo) string {
 	var b strings.Builder
 	nombres := make([]string, 0, len(m))
 	for n := range m {
@@ -243,21 +359,12 @@ func Informe(m map[string]ResumenBrazo, rotas int) string {
 	}
 	sort.Strings(nombres)
 
-	fmt.Fprintf(&b, "%-12s %9s %8s %8s %10s %8s %8s\n",
-		"brazo", "intentos", "fallas", "tasa", "resets", "timeouts", "otras")
+	fmt.Fprintf(&b, "  %-12s %9s %8s %9s %8s %9s %7s\n",
+		"brazo", "n", "fallas", "tasa", "resets", "timeouts", "otras")
 	for _, n := range nombres {
 		s := m[n]
-		fmt.Fprintf(&b, "%-12s %9d %8d %7.3f%% %10d %8d %8d\n",
+		fmt.Fprintf(&b, "  %-12s %9d %8d %8.3f%% %8d %9d %7d\n",
 			s.Brazo, s.Intentos, s.Fallas, s.Tasa()*100, s.Resets, s.Timeouts, s.Otras)
 	}
-	if rotas > 0 {
-		fmt.Fprintf(&b, "\n(%d líneas ilegibles, ignoradas)\n", rotas)
-	}
-
-	v := Concluir(m)
-	fmt.Fprintf(&b, "\nveredicto: %s\n  %s\n", v.Codigo, v.Detalle)
-	fmt.Fprintf(&b, "\ndesempate de 30 s: %s\n", Desempate30s(m))
-	fmt.Fprintf(&b, "\nla regla es la de docs/superpowers/plans/2026-08-26-egress-ipv6-vs-ipv4.md,\n"+
-		"escrita antes de que existieran estos datos.\n")
 	return b.String()
 }

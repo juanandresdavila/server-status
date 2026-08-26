@@ -224,3 +224,42 @@ Ninguna IP del VPS entra en ningún archivo. El error crudo que devuelve Go
 —`read tcp <origen>-><destino>: …`— **contiene la IP de origen**, así que el
 pinger la tacha antes de escribirla (`egress.Redactar`), y registra del lado
 local solo el puerto. En documentación se escribe `<ipv6-vps>` / `<ip-tailnet>`.
+
+---
+
+## Enmienda del 26/08/2026, 21:30 UTC — la unidad de análisis es el tick
+
+**Qué se cambió:** el veredicto se saca contando **ticks** (brazo × instante), no
+intentos, y el desempate de 30 s se calcula **solo sobre los ticks `:00`**.
+
+**Por qué.** A los 45 minutos de correr aparecieron 11 intentos fallados, y al
+mirarlos se vieron dos defectos de la regla original:
+
+1. **Las fallas no son independientes, y Fisher supone que lo son.** Los 11
+   intentos son **5 momentos**: un blip corta los cinco destinos en el mismo
+   segundo. Contarlos como cinco observaciones le da al test cinco veces la
+   evidencia que hay. La unidad tiene que ser el tick, que falla si falló alguno
+   de sus destinos.
+2. **El brazo de 30 s no era comparable con los de 60 s.** Las 10 fallas de
+   `v6-ka-30s` cayeron **todas** en el offset `:30`, que es el único instante que
+   ningún otro brazo mira; en los ticks `:00`, donde dispara junto a los otros
+   cuatro, tuvo cero. Su "tasa más alta" mezclaba *cuánto ocio tenía la conexión*
+   con *qué instantes miró*. Restringido a `:00`, `v6-ka` y `v6-ka-30s` tienen
+   exposición idéntica —mismos instantes, mismos destinos— y difieren solo en el
+   ocio, que es lo único que el desempate quiere medir.
+
+**Por qué esto no es acomodar la regla al resultado.** Las dos correcciones
+**restan** evidencia, no suman: con ticks, los 5 momentos observados dejan de
+alcanzar cualquier umbral, y el desempate pierde las 10 fallas que lo hacían
+parecer concluyente. La enmienda hace más difícil confirmar la hipótesis, no más
+fácil. Son defectos de método —estructura de dependencia y exposición
+asimétrica—, no ajustes de resultado.
+
+**Qué NO cambió:** ni el instrumento, ni los brazos, ni los destinos, ni la
+cadencia, ni los umbrales (≥10 eventos, p < 0,01), ni la tabla de decisión, ni la
+regla de parada. Los datos ya recogidos sirven tal cual: traen el instante de
+cada intento, que es todo lo que la corrección necesita.
+
+**Cómo se reporta:** `-analizar` imprime **las dos lecturas** —por intento, como
+se pre-registró, y por tick— y saca el veredicto de la segunda. El resultado
+final se publica con las dos a la vista.
