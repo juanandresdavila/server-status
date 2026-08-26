@@ -13,39 +13,46 @@ type texto struct{ ES, EN string }
 var textos = map[string]texto{
 	// nav
 	"nav-eventos": {"eventos", "events"},
-	// el valor es el idioma DESTINO del toggle y su etiqueta: en la página en
-	// español se ofrece "EN", y al revés.
-	"idioma-otro":     {"en", "es"},
-	"idioma-etiqueta": {"EN", "ES"},
-
 	// panel: la línea de arriba y las tarjetas
-	"carga":       {"carga", "load"},
-	"actualizado": {"actualizado", "updated"},
-	"cpu-pico":    {"CPU pico", "CPU peak"},
-	"memoria":     {"Memoria", "Memory"},
-	"disco":       {"Disco", "Disk"},
+	"carga": {"carga", "load"},
+	// El load average no tiene unidad: es el promedio de procesos corriendo o
+	// esperando disco. Sin decir a qué intervalos corresponde cada número, y
+	// contra cuántos núcleos se compara, "0.48 / 0.55 / 0.54" no se puede leer.
+	"carga-detalle": {"1m/5m/15m · %d vCPU", "1m/5m/15m · %d vCPU"},
+	"actualizado":   {"actualizado", "updated"},
+	"cpu-pico":      {"CPU pico", "CPU peak"},
+	"memoria":       {"Memoria", "Memory"},
+	"disco":         {"Disco", "Disk"},
 
 	// panel: secciones y tablas
-	"historial":       {"Historial", "History"},
-	"servicios":       {"Servicios", "Services"},
-	"incidentes":      {"Incidentes", "Incidents"},
-	"servicio":        {"Servicio", "Service"},
-	"estado":          {"Estado", "Status"},
-	"codigo":          {"Código", "Code"},
-	"latencia":        {"Latencia", "Latency"},
-	"detalle":         {"Detalle", "Detail"},
-	"caido":           {"CAÍDO", "DOWN"},
-	"nombre":          {"Nombre", "Name"},
-	"salud":           {"Salud", "Health"},
-	"reinicios":       {"Reinicios", "Restarts"},
-	"sujeto":          {"Sujeto", "Subject"},
-	"severidad":       {"Severidad", "Severity"},
-	"desde-col":       {"Desde", "From"},
-	"hasta-col":       {"Hasta", "Until"},
-	"abierto":         {"abierto", "open"},
-	"sin-incidentes":  {"sin incidentes registrados", "no incidents recorded"},
-	"resolver":        {"resolver", "resolve"},
-	"archivar":        {"archivar", "archive"},
+	"historial":      {"Historial", "History"},
+	"servicios":      {"Servicios", "Services"},
+	"incidentes":     {"Incidentes", "Incidents"},
+	"servicio":       {"Servicio", "Service"},
+	"estado":         {"Estado", "Status"},
+	"codigo":         {"Código", "Code"},
+	"latencia":       {"Latencia", "Latency"},
+	"detalle":        {"Detalle", "Detail"},
+	"caido":          {"CAÍDO", "DOWN"},
+	"nombre":         {"Nombre", "Name"},
+	"salud":          {"Salud", "Health"},
+	"reinicios":      {"Reinicios", "Restarts"},
+	"sujeto":         {"Sujeto", "Subject"},
+	"severidad":      {"Severidad", "Severity"},
+	"desde-col":      {"Desde", "From"},
+	"hasta-col":      {"Hasta", "Until"},
+	"abierto":        {"abierto", "open"},
+	"sin-incidentes": {"sin incidentes registrados", "no incidents recorded"},
+	"resolver":       {"resolver", "resolve"},
+	"archivar":       {"archivar", "archive"},
+	"archivado":      {"archivado", "archived"},
+	"ver-archivados": {"ver archivados", "show archived"},
+	"ocultar-archiv": {"ocultar archivados", "hide archived"},
+	// Dos columnas porque son dos preguntas distintas: cuántas veces arrancó
+	// de nuevo en la ventana que estoy mirando, y qué dice el contador de
+	// Docker (que solo cuenta reinicios por política y se resetea al recrear).
+	"reinicios-vent": {"Reinicios (ventana)", "Restarts (window)"},
+	"reinicios-dock": {"Docker", "Docker"},
 
 	// panel: títulos de los gráficos (viven en el JS de la plantilla)
 	"g-cpu":       {"CPU %", "CPU %"},
@@ -79,6 +86,10 @@ var textos = map[string]texto{
 	"export-truncado": {"# TRUNCADO en %d líneas: el archivo cubre desde %s, no desde lo pedido.\n", "# TRUNCATED at %d lines: the file covers from %s, not from what was requested.\n"},
 	"export-consejo":  {"# Achicá la ventana, filtrá por container o apagá niveles ruidosos.\n", "# Narrow the window, filter by container or turn off noisy levels.\n"},
 	"export-lineas":   {"# %d líneas\n\n", "# %d lines\n\n"},
+
+	// logs: modo en vivo y tope
+	"en-vivo-toggle": {"en vivo", "live"},
+	"tope":           {"tope", "cap"},
 
 	// tail
 	"conectando":   {"conectando…", "connecting…"},

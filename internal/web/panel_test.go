@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -82,6 +83,22 @@ func (datosFalsos) UltimosIncidentes(int) ([]model.Incidente, error) {
 // Las acciones sobre incidentes no le importan a la mayoría de los tests.
 func (datosFalsos) CerrarIncidente(int64, time.Time) error   { return nil }
 func (datosFalsos) ArchivarIncidente(int64, time.Time) error { return nil }
+
+func (datosFalsos) MaxRowidLogs() (int64, error) { return 4321, nil }
+
+func (datosFalsos) LogsDesdeRowid(texto, container string, niveles []string, desde int64, limite int) ([]model.LineaLog, int64, error) {
+	return []model.LineaLog{{
+		TS:        time.Date(2026, 8, 9, 12, 0, 30, 0, time.UTC),
+		Container: "comm-tool", Stream: "stderr", Linea: "ERROR recien llegada",
+		Nivel: "ERROR",
+	}}, desde + 1, nil
+}
+
+// recreado se reinició una vez en la ventana con RestartCount en CERO: es lo
+// que deja `compose up -d`, y es el caso que la columna vieja no veía.
+func (datosFalsos) ReiniciosEntre(desde, hasta time.Time) (map[string]int, error) {
+	return map[string]int{"supabase-db": 3, "comm-tool": 1}, nil
+}
 
 func (d datosFalsos) SerieHost(desde, hasta time.Time) ([]model.HostSample, error) {
 	base := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
@@ -724,4 +741,238 @@ type espia struct {
 func (e espia) BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
 	e.cb(desde, hasta)
 	return e.datosFalsos.BuscarLogs(texto, container, niveles, desde, hasta, limite)
+}
+
+// ── Tanda del 26/08/2026 ────────────────────────────────────────────────────
+
+// espiaLimite captura el tope con el que se consultó el store.
+type espiaLimite struct {
+	datosFalsos
+	cb func(int)
+}
+
+func (e espiaLimite) BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+	e.cb(limite)
+	return e.datosFalsos.BuscarLogs(texto, container, niveles, desde, hasta, limite)
+}
+
+// El tope de 500 recortaba una ventana de 24 h a menos de cinco horas cuando
+// había un container ruidoso. Ahora se elige, y lo que se elige llega al store.
+func TestElTopeElegidoLlegaAlStore(t *testing.T) {
+	casos := []struct {
+		ruta   string
+		quiero int
+	}{
+		{"/logs", 5000},                   // default
+		{"/logs?limite=25000", 25000},     // el máximo del selector
+		{"/logs?limite=10000", 10000},     //
+		{"/logs?limite=999999", 5000},     // fuera de la lista: cae al default
+		{"/logs?limite=cualquiera", 5000}, // basura: idem
+		{"/logs?limite=500", 5000},        // el tope viejo ya no es una opción
+	}
+	for _, c := range casos {
+		var visto int
+		h := web.NuevoPanel(espiaLimite{cb: func(n int) { visto = n }}, zonaDePrueba)
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", c.ruta, nil))
+		if visto != c.quiero {
+			t.Errorf("%s: tope %d, quería %d", c.ruta, visto, c.quiero)
+		}
+	}
+}
+
+// El export nunca baja de su piso aunque la vista pida menos: es un archivo que
+// se abre en otro lado y aguanta más que un navegador renderizando divs.
+func TestElExportNoBajaDeSuPiso(t *testing.T) {
+	var visto int
+	h := web.NuevoPanel(espiaLimite{cb: func(n int) { visto = n }}, zonaDePrueba)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/logs/export?limite=5000", nil))
+	if visto != 10000 {
+		t.Errorf("tope del export = %d, quería 10000", visto)
+	}
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/logs/export?limite=25000", nil))
+	if visto != 25000 {
+		t.Errorf("tope del export = %d, quería 25000: el selector le gana al piso", visto)
+	}
+}
+
+// El poll del modo en vivo devuelve la hora YA formateada en la zona del panel.
+// Si la formateara el navegador saldría la del cliente, y las líneas nuevas
+// mostrarían una hora distinta a las de abajo, que las formatea el server.
+func TestElPollEnVivoFormateaLaHoraEnLaZonaDelPanel(t *testing.T) {
+	rec := pedir(t, "/api/logs/nuevos?cursor=10")
+
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	var got struct {
+		Cursor int64 `json:"cursor"`
+		Lineas []struct {
+			Hora, Nivel, Container, Linea string
+		} `json:"lineas"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v — %s", err, rec.Body.String())
+	}
+	if len(got.Lineas) != 1 {
+		t.Fatalf("got = %+v, quería una línea", got.Lineas)
+	}
+	// La línea falsa ocurrió 12:00:30 UTC → 09:00:30 en Buenos Aires.
+	if got.Lineas[0].Hora != "09/08/2026 09:00:30" {
+		t.Errorf("hora = %q, quería 09/08/2026 09:00:30 (12:00:30 UTC en Buenos Aires)", got.Lineas[0].Hora)
+	}
+	if got.Cursor != 11 {
+		t.Errorf("cursor = %d, quería 11: tiene que avanzar", got.Cursor)
+	}
+}
+
+// El modo en vivo solo tiene sentido con ventana relativa: con desde/hasta
+// puestos uno mira el pasado, y pegar líneas nuevas arriba mentiría sobre la
+// ventana que pidió.
+func TestElToggleEnVivoSoloApareceConVentanaRelativa(t *testing.T) {
+	if !strings.Contains(pedir(t, "/logs").Body.String(), `id="vivo"`) {
+		t.Error("/logs sin rango explícito tiene que ofrecer el modo en vivo")
+	}
+	conRango := pedir(t, "/logs?desde=2026-08-22T01:50&hasta=2026-08-22T02:10").Body.String()
+	if strings.Contains(conRango, `id="vivo"`) {
+		t.Error("con desde/hasta explícitos NO puede ofrecer el modo en vivo")
+	}
+}
+
+// La columna de reinicios de la ventana sale de started_at. La de Docker sigue
+// al lado porque es otra cosa: RestartCount no se mueve cuando un container se
+// recrea, que es exactamente lo que pasó con cloudflared el 26/08/2026.
+func TestLasDosColumnasDeReiniciosMuestranNumerosDistintos(t *testing.T) {
+	cuerpo := pedir(t, "/").Body.String()
+
+	// supabase-db: 3 reinicios en la ventana, RestartCount de Docker en 2.
+	fila := cuerpo[strings.Index(cuerpo, "supabase-db"):]
+	fila = fila[:strings.Index(fila, "</tr>")]
+	if !strings.Contains(fila, ">3</td>") {
+		t.Errorf("falta el 3 de la ventana en la fila de supabase-db:\n%s", fila)
+	}
+	if !strings.Contains(fila, ">2</td>") {
+		t.Errorf("falta el 2 de RestartCount en la fila de supabase-db:\n%s", fila)
+	}
+}
+
+// Archivar es "ya lo vi", no "que no haya pasado": el panel los esconde por
+// default y hay un toggle para verlos.
+func TestLosArchivadosSeEscondenPeroSePuedenVer(t *testing.T) {
+	sinToggle := pedir(t, "/").Body.String()
+	if strings.Contains(sinToggle, "service:viejo-archivado") {
+		t.Error("el panel no puede mostrar incidentes archivados sin pedirlo")
+	}
+	if !strings.Contains(sinToggle, "archivados=1") {
+		t.Error("falta el link para ver los archivados")
+	}
+
+	conToggle := pedir(t, "/?archivados=1").Body.String()
+	if !strings.Contains(conToggle, "service:viejo-archivado") {
+		t.Error("con ?archivados=1 el archivado tiene que aparecer")
+	}
+	// Y marcado como tal: sin la marca no se distingue del resto.
+	fila := conToggle[strings.Index(conToggle, "service:viejo-archivado"):]
+	if !strings.Contains(fila[:strings.Index(fila, "</tr>")], "archivado</span>") {
+		t.Error("el incidente archivado tiene que verse marcado")
+	}
+}
+
+// Resolver y archivar mandaban a "/" y te expulsaban de la vista en la que
+// estabas — justo la de archivados, que es donde uno archiva de a varios.
+func TestLasAccionesVuelvenADondeEstabas(t *testing.T) {
+	casos := []struct {
+		nombre, volver, quiero string
+	}{
+		{"vuelve a donde estaba", "/?horas=6&archivados=1", "/?horas=6&archivados=1"},
+		{"sin volver cae al inicio", "", "/"},
+		// "//otro.sitio" es una URL ABSOLUTA para el navegador: sin el filtro,
+		// el redirect se convierte en un open redirect. Privado sigue siendo uno.
+		{"rechaza un destino de afuera", "//jadd.com.ar/robo", "/"},
+		{"rechaza una URL absoluta", "https://jadd.com.ar/robo", "/"},
+	}
+	for _, c := range casos {
+		h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/incidents/2/archive",
+			strings.NewReader("volver="+url.QueryEscape(c.volver)))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("%s: código %d, quería 303", c.nombre, rec.Code)
+		}
+		if got := rec.Header().Get("Location"); got != c.quiero {
+			t.Errorf("%s: Location = %q, quería %q", c.nombre, got, c.quiero)
+		}
+	}
+}
+
+// El idioma SÍ cambiaba; lo que no se veía era el control. Los dos idiomas
+// siempre visibles, con el activo marcado.
+func TestElToggleDeIdiomaMuestraLosDosYCualEstaActivo(t *testing.T) {
+	for _, c := range []struct{ ruta, activo, otro string }{
+		{"/", "es", "en"},
+		{"/?lang=en", "en", "es"},
+	} {
+		cuerpo := pedir(t, c.ruta).Body.String()
+		nav := cuerpo[strings.Index(cuerpo, `class="idiomas"`):]
+		nav = nav[:strings.Index(nav, "</span>")]
+
+		for _, l := range []string{"ES", "EN"} {
+			if !strings.Contains(nav, ">"+l+"<") {
+				t.Errorf("%s: falta la opción %s en el toggle", c.ruta, l)
+			}
+		}
+		// El activo es el que tiene la clase, y solo uno la tiene. Se mira
+		// anchor por anchor: contar clases sueltas no diría CUÁL quedó marcada.
+		var activos []string
+		for _, a := range strings.Split(nav, "<a ")[1:] {
+			for _, l := range []string{"es", "en"} {
+				if strings.Contains(a, `'lang','`+l+`'`) && strings.Contains(a, `class="activo"`) {
+					activos = append(activos, l)
+				}
+			}
+		}
+		if len(activos) != 1 || activos[0] != c.activo {
+			t.Errorf("%s: marcados como activos %v, quería solo [%s]", c.ruta, activos, c.activo)
+		}
+	}
+}
+
+// "carga 0.48 / 0.55 / 0.54" sin decir qué es no se puede leer: son procesos,
+// a 1/5/15 minutos, y se comparan contra la cantidad de núcleos.
+func TestLaCargaDiceAQueIntervalosYContraCuantosNucleos(t *testing.T) {
+	cuerpo := pedir(t, "/").Body.String()
+	if !strings.Contains(cuerpo, "1m/5m/15m") {
+		t.Error("la carga no dice a qué intervalos corresponde cada número")
+	}
+	if !strings.Contains(cuerpo, "vCPU") {
+		t.Error("la carga no dice contra cuántos núcleos se compara")
+	}
+}
+
+// La terminal y la pantalla NO viven acá: este proceso no pide contraseña y
+// habla con el socket de Docker. El nav las ofrece como enlaces externos, y la
+// URL sale de la config porque lleva la IP de tailnet.
+func TestElNavOfreceLosEnlacesExternos(t *testing.T) {
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba,
+		web.Enlace{Nombre: "terminal", URL: "https://ejemplo.invalid:9090"})
+
+	for _, ruta := range []string{"/", "/logs", "/events"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", ruta, nil))
+		cuerpo := rec.Body.String()
+		if !strings.Contains(cuerpo, "https://ejemplo.invalid:9090") {
+			t.Errorf("%s: falta el enlace externo en el nav", ruta)
+		}
+		if !strings.Contains(cuerpo, `rel="noopener"`) {
+			t.Errorf("%s: el enlace externo tiene que llevar rel=noopener", ruta)
+		}
+	}
+
+	// Sin enlaces configurados el nav no inventa ninguno. Se busca la clase y
+	// no la palabra: "externo" aparece igual en el CSS del nav, que va siempre.
+	if strings.Contains(pedir(t, "/").Body.String(), `class="externo"`) {
+		t.Error("sin enlaces en la config el nav no puede mostrar ninguno")
+	}
 }
