@@ -724,18 +724,90 @@ func (s *Store) InsertLogs(ls []model.LineaLog) error {
 // ítem y "TRACE y ERROR sin el medio" tiene que poder pedirse. La validación
 // vive en logs.Conjunto; con nada válido cae al default de la vista.
 func (s *Store) BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
-	// COALESCE porque una fila insertada antes de la migración 9 todavía puede
-	// no tener nivel si el backfill no llegó: se la trata como INFO en vez de
-	// hacerla desaparecer.
-	q := `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO')
-	      FROM logs l LEFT JOIN log_niveles n ON n.rowid = l.rowid
-	      WHERE l.ts <= ?`
+	q := selectLogs + ` WHERE l.ts <= ?`
 	args := []any{hasta.Unix()}
 
 	if !desde.IsZero() {
 		q += ` AND l.ts >= ?`
 		args = append(args, desde.Unix())
 	}
+	q, args = filtroLogs(q, args, texto, container, niveles)
+
+	q += ` ORDER BY l.ts DESC LIMIT ?`
+	args = append(args, limite)
+
+	lineas, _, err := s.consultarLogs(q, args)
+	return lineas, err
+}
+
+// MaxRowidLogs siembra el cursor del modo en vivo en la carga inicial de la
+// vista: a partir de acá, todo lo que aparezca es nuevo.
+func (s *Store) MaxRowidLogs() (int64, error) {
+	var max sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MAX(rowid) FROM logs`).Scan(&max); err != nil {
+		return 0, err
+	}
+	return max.Int64, nil
+}
+
+// LogsDesdeRowid trae lo que entró después del cursor, con los mismos filtros
+// que la vista, y devuelve el cursor nuevo.
+//
+// El cursor es el ROWID y no el ts, y no es un detalle. Los logs se ingieren
+// en tandas de a un minuto, y una línea puede entrar con una marca de tiempo
+// ANTERIOR a otra que ya se mostró —containers distintos, relojes distintos,
+// un volcado que se atrasó—. Con un cursor por ts esas líneas caen debajo del
+// piso en el mismo instante en que se guardan y no las ve nadie nunca. El
+// rowid de FTS5 es monotónico por inserción: `rowid > cursor` no pierde ni
+// repite, sin importar cómo vengan fechadas.
+//
+// Devuelve las líneas de la más nueva a la más vieja, igual que BuscarLogs,
+// para que la vista las pueda pegar arriba sin reordenar nada.
+func (s *Store) LogsDesdeRowid(texto, container string, niveles []string, desde int64, limite int) ([]model.LineaLog, int64, error) {
+	q := selectLogsConRowid + ` WHERE l.rowid > ?`
+	args := []any{desde}
+	q, args = filtroLogs(q, args, texto, container, niveles)
+
+	// ASC y no DESC, aunque la vista quiera lo nuevo arriba. Con DESC + LIMIT,
+	// un backlog más grande que el tope —la pestaña que quedó abierta toda la
+	// noche— devuelve las últimas N y deja el cursor en la más nueva de esas:
+	// todo lo del medio se saltea y no vuelve nunca. Con ASC el cursor avanza
+	// pegado, y lo que no entró en esta tanda entra en el poll siguiente.
+	q += ` ORDER BY l.rowid ASC LIMIT ?`
+	args = append(args, limite)
+
+	lineas, max, err := s.consultarLogs(q, args)
+	if err != nil {
+		return nil, 0, err
+	}
+	// Sin filas el cursor NO retrocede: devolver 0 haría que el próximo poll
+	// se trajera la base entera.
+	if max == 0 {
+		max = desde
+	}
+	// Se da vuelta acá y no en SQL para que el contrato sea el mismo que el de
+	// BuscarLogs —de la más nueva a la más vieja— y la vista no tenga que saber
+	// que por abajo se consultó al revés.
+	for i, j := 0, len(lineas)-1; i < j; i, j = i+1, j-1 {
+		lineas[i], lineas[j] = lineas[j], lineas[i]
+	}
+	return lineas, max, nil
+}
+
+// COALESCE porque una fila insertada antes de la migración 9 todavía puede no
+// tener nivel si el backfill no llegó: se la trata como INFO en vez de hacerla
+// desaparecer.
+const selectLogs = `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO'), 0
+	      FROM logs l LEFT JOIN log_niveles n ON n.rowid = l.rowid`
+
+const selectLogsConRowid = `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO'), l.rowid
+	      FROM logs l LEFT JOIN log_niveles n ON n.rowid = l.rowid`
+
+// filtroLogs pega los filtros que comparten la vista y el modo en vivo. Vive
+// en un solo lugar porque el día que se agregue uno y se olvide de la otra
+// consulta, el modo en vivo empieza a pegar arriba líneas que el filtro de
+// abajo esconde — y eso se lee como un bug del filtro, no de acá.
+func filtroLogs(q string, args []any, texto, container string, niveles []string) (string, []any) {
 	if container != "" {
 		q += ` AND l.container = ?`
 		args = append(args, container)
@@ -753,24 +825,65 @@ func (s *Store) BuscarLogs(texto, container string, niveles []string, desde, has
 		q += ` AND logs MATCH ?`
 		args = append(args, escaparMatch(texto))
 	}
-	q += ` ORDER BY l.ts DESC LIMIT ?`
-	args = append(args, limite)
+	return q, args
+}
 
+// consultarLogs escanea las filas y devuelve de paso el rowid más alto que vio.
+func (s *Store) consultarLogs(q string, args []any) ([]model.LineaLog, int64, error) {
 	filas, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer filas.Close()
+
+	var out []model.LineaLog
+	var max int64
+	for filas.Next() {
+		var l model.LineaLog
+		var ts, rowid int64
+		if err := filas.Scan(&l.Linea, &l.Container, &l.Stream, &ts, &l.Nivel, &rowid); err != nil {
+			return nil, 0, err
+		}
+		l.TS = time.Unix(ts, 0).UTC()
+		if rowid > max {
+			max = rowid
+		}
+		out = append(out, l)
+	}
+	return out, max, filas.Err()
+}
+
+// ReiniciosEntre cuenta, por container, cuántas veces arrancó de nuevo dentro
+// de la ventana.
+//
+// Sale de started_at y NO de RestartCount, que es otra cosa: RestartCount solo
+// cuenta los reinicios por POLÍTICA de Docker, así que recrear un container con
+// `compose up -d` lo deja en cero aunque haya arrancado de nuevo hace un minuto.
+// Pasó con cloudflared el 26/08/2026: /events registró el reinicio y la columna
+// del panel seguía diciendo 0.
+//
+// Los distintos menos uno: un container que no se reinició tiene un solo
+// started_at en toda la ventana. started_at = 0 son las filas anteriores a la
+// migración 10 —"no se sabe"— y quedan afuera, porque contarlas como un
+// arranque más inventaría un reinicio en el borde de la migración.
+func (s *Store) ReiniciosEntre(desde, hasta time.Time) (map[string]int, error) {
+	filas, err := s.db.Query(`
+		SELECT name, COUNT(DISTINCT started_at) FROM container_samples
+		WHERE ts >= ? AND ts <= ? AND started_at > 0
+		GROUP BY name`, desde.Unix(), hasta.Unix())
 	if err != nil {
 		return nil, err
 	}
 	defer filas.Close()
 
-	var out []model.LineaLog
+	out := map[string]int{}
 	for filas.Next() {
-		var l model.LineaLog
-		var ts int64
-		if err := filas.Scan(&l.Linea, &l.Container, &l.Stream, &ts, &l.Nivel); err != nil {
+		var name string
+		var distintos int
+		if err := filas.Scan(&name, &distintos); err != nil {
 			return nil, err
 		}
-		l.TS = time.Unix(ts, 0).UTC()
-		out = append(out, l)
+		out[name] = distintos - 1
 	}
 	return out, filas.Err()
 }

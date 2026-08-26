@@ -1041,3 +1041,169 @@ func TestBackfillNoRepiteCuandoYaTermino(t *testing.T) {
 		t.Errorf("n=%d listo=%v, quería 0 y true sobre una base vacía", n, listo)
 	}
 }
+
+// El cursor del modo en vivo es el rowid y no el ts justamente por este caso:
+// los logs se ingieren en tandas de a un minuto y una línea puede entrar con
+// una marca de tiempo ANTERIOR a otra que ya se mostró. Un cursor por ts se
+// saltearía esas líneas para siempre y nadie se enteraría.
+func TestLogsDesdeRowidNoPierdeLineasQueLleganDesordenadas(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+
+	if err := s.InsertLogs(lineas(base, "x", "primera", "segunda")); err != nil {
+		t.Fatalf("InsertLogs: %v", err)
+	}
+	cursor, err := s.MaxRowidLogs()
+	if err != nil {
+		t.Fatalf("MaxRowidLogs: %v", err)
+	}
+
+	// Tanda que llega después pero está fechada DIEZ MINUTOS ANTES.
+	if err := s.InsertLogs(lineas(base.Add(-10*time.Minute), "x", "atrasada")); err != nil {
+		t.Fatalf("InsertLogs: %v", err)
+	}
+
+	nuevas, ultimo, err := s.LogsDesdeRowid("", "", nil, cursor, 50)
+	if err != nil {
+		t.Fatalf("LogsDesdeRowid: %v", err)
+	}
+	if len(nuevas) != 1 || nuevas[0].Linea != "atrasada" {
+		t.Fatalf("got = %+v, quería solo la línea atrasada", nuevas)
+	}
+	if ultimo <= cursor {
+		t.Errorf("ultimo = %d, tenía que avanzar sobre %d", ultimo, cursor)
+	}
+
+	// Segundo poll sin novedades: ni repite ni retrocede el cursor.
+	otra, despues, err := s.LogsDesdeRowid("", "", nil, ultimo, 50)
+	if err != nil {
+		t.Fatalf("LogsDesdeRowid: %v", err)
+	}
+	if len(otra) != 0 {
+		t.Errorf("got = %+v, quería cero líneas", otra)
+	}
+	if despues != ultimo {
+		t.Errorf("cursor = %d, quería que se quedara en %d", despues, ultimo)
+	}
+}
+
+func TestLogsDesdeRowidRespetaLosFiltros(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+
+	s.InsertLogs(conNivel(base, "ruidoso", "continuacion de sql", "TRACE"))
+	s.InsertLogs(conNivel(base, "importante", "se cayo", "ERROR"))
+
+	casos := []struct {
+		nombre    string
+		container string
+		niveles   []string
+		quiero    int
+	}{
+		{"sin filtro cae al default: todo menos TRACE", "", nil, 1},
+		{"por container", "ruidoso", []string{"TRACE", "INFO", "WARN", "ERROR"}, 1},
+		{"por nivel", "", []string{"ERROR"}, 1},
+		{"container y nivel que no se cruzan", "ruidoso", []string{"ERROR"}, 0},
+	}
+	for _, c := range casos {
+		got, _, err := s.LogsDesdeRowid("", c.container, c.niveles, 0, 50)
+		if err != nil {
+			t.Fatalf("%s: %v", c.nombre, err)
+		}
+		if len(got) != c.quiero {
+			t.Errorf("%s: %d líneas, quería %d", c.nombre, len(got), c.quiero)
+		}
+	}
+}
+
+// Los reinicios de la ventana salen de started_at y NO de RestartCount, que
+// solo cuenta los reinicios por política de Docker: recrear un container con
+// `compose up -d` lo deja en cero aunque haya arrancado de nuevo. Fue el caso
+// de cloudflared el 26/08/2026 — /events lo vio y la tabla del panel no.
+func TestReiniciosEntreCuentaArranquesDistintos(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+
+	arranque := func(min int, name string, arrancoEn time.Time, restartCount int) model.ContainerSample {
+		return model.ContainerSample{
+			TS: base.Add(time.Duration(min) * time.Minute), Name: name,
+			State: "running", Health: "healthy", Restarts: restartCount,
+			StartedAt: arrancoEn,
+		}
+	}
+	viejo := base.Add(-48 * time.Hour)
+
+	// quieto: mismo started_at toda la ventana.
+	// recreado: cambia una vez, con RestartCount SIEMPRE en cero — es
+	//   exactamente lo que hace `compose up -d`.
+	// sinDato: started_at en cero, las filas anteriores a la migración 10.
+	if err := s.InsertContainerSamples([]model.ContainerSample{
+		arranque(0, "quieto", viejo, 0),
+		arranque(1, "quieto", viejo, 0),
+		arranque(2, "quieto", viejo, 0),
+		arranque(0, "recreado", viejo, 0),
+		arranque(1, "recreado", base.Add(time.Minute), 0),
+		arranque(2, "recreado", base.Add(time.Minute), 0),
+		arranque(0, "sinDato", time.Time{}, 0),
+		arranque(1, "sinDato", time.Time{}, 0),
+	}); err != nil {
+		t.Fatalf("InsertContainerSamples: %v", err)
+	}
+
+	got, err := s.ReiniciosEntre(base, base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ReiniciosEntre: %v", err)
+	}
+	quiero := map[string]int{"quieto": 0, "recreado": 1, "sinDato": 0}
+	for name, n := range quiero {
+		if got[name] != n {
+			t.Errorf("%s = %d reinicios, quería %d", name, got[name], n)
+		}
+	}
+
+	// Una ventana que empieza DESPUÉS del cambio no lo cuenta: el reinicio
+	// quedó afuera, y contarlo igual sería lo mismo que muestra RestartCount.
+	tarde, err := s.ReiniciosEntre(base.Add(time.Minute), base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ReiniciosEntre: %v", err)
+	}
+	if tarde["recreado"] != 0 {
+		t.Errorf("ventana posterior: recreado = %d, quería 0", tarde["recreado"])
+	}
+}
+
+// El caso de la pestaña que quedó abierta toda la noche: hay más para traer
+// que el tope del poll. El cursor tiene que avanzar PEGADO, sin saltear el
+// medio, y devolver lo más nuevo arriba igual que BuscarLogs.
+func TestLogsDesdeRowidNoSalteaCuandoHayMasQueElTope(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+
+	if err := s.InsertLogs(lineas(base, "x", "a", "b", "c", "d", "e")); err != nil {
+		t.Fatalf("InsertLogs: %v", err)
+	}
+
+	var vistas []string
+	cursor := int64(0)
+	for range 5 { // de a dos, hasta agotar
+		tanda, siguiente, err := s.LogsDesdeRowid("", "", nil, cursor, 2)
+		if err != nil {
+			t.Fatalf("LogsDesdeRowid: %v", err)
+		}
+		if len(tanda) == 0 {
+			break
+		}
+		// Dentro de la tanda, la más nueva primero.
+		if len(tanda) == 2 && tanda[0].TS.Before(tanda[1].TS) {
+			t.Errorf("la tanda vino de la más vieja a la más nueva: %+v", tanda)
+		}
+		for i := len(tanda) - 1; i >= 0; i-- {
+			vistas = append(vistas, tanda[i].Linea)
+		}
+		cursor = siguiente
+	}
+
+	if got, quiero := strings.Join(vistas, ","), "a,b,c,d,e"; got != quiero {
+		t.Errorf("vistas = %q, quería %q — el cursor salteó líneas", got, quiero)
+	}
+}
