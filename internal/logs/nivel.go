@@ -107,6 +107,12 @@ var (
 	// Una palabra suelta, pero SOLO en mayúsculas: así "INFO" del slog de Go
 	// cuenta y la palabra "error" en medio de una frase en prosa no.
 	reSuelto = regexp.MustCompile(`\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|FATAL|PANIC)\b`)
+
+	// El User-Agent de nuestras propias sondas, y SOLO como último campo
+	// entrecomillado de la línea: así "/egress-probe" en la ruta no cuenta.
+	// Un cliente puede mentir su UA, pero lo peor que consigue es que su 4xx
+	// se vea en TRACE en vez de en WARN — no abre ninguna puerta.
+	reSondaPropia = regexp.MustCompile(`"(?:server-status|egress-probe)"\s*$`)
 )
 
 // Clasificar devuelve el nivel de una línea. El stream es el último recurso:
@@ -127,7 +133,7 @@ func Clasificar(linea, stream string) Nivel {
 		// que el propio logger consideró informativo — si dijo error, se le cree.
 		if n == Info && esAccesoJSON(linea) {
 			if c, ok := estadoJSON(linea); ok {
-				return deCodigoHTTP(c)
+				return nivelDeAcceso(c, linea)
 			}
 			return Trace
 		}
@@ -143,7 +149,7 @@ func Clasificar(linea, stream string) Nivel {
 	//    minuto no es información: son 590 líneas por día por cada Kong.
 	if m := reAcceso.FindStringSubmatch(linea); m != nil {
 		if c, err := strconv.Atoi(m[1]); err == nil {
-			return deCodigoHTTP(c)
+			return nivelDeAcceso(c, linea)
 		}
 	}
 
@@ -194,6 +200,28 @@ func estadoJSON(linea string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// nivelDeAcceso clasifica un log de acceso mirando el código Y quién pidió.
+//
+// Un 4xx contra una de nuestras sondas es un artefacto de la medición y no un
+// hecho del sistema: el destino de gym-tracker de egress-probe sale SIN apikey
+// a propósito (ver internal/egress/sonda.go), y Kong lo rechaza con 401 unas
+// 8600 veces por día. Medido el 31/08/2026 sobre la base real: esos 401 eran el
+// 99,5 % de los WARN de 24 h y el 55 % de TODAS las líneas guardadas, así que
+// el tope de la vista se agotaba a las 12 h y el log quedaba inservible justo
+// para lo que existe. Es la misma trampa que el probe de `/auth/v1/authorize`
+// con estado_esperado 400, que dejaba un error falso por minuto.
+//
+// Un 5xx sí queda como está aunque lo haya pedido la sonda: que el destino se
+// caiga es noticia lo pida quien lo pida. Y el 4xx de un cliente de VERDAD
+// —una sesión vencida en gym-tracker— sigue siendo WARN, que es el caso que
+// hace que valga la pena tener 4xx en WARN.
+func nivelDeAcceso(codigo int, linea string) Nivel {
+	if codigo < 500 && reSondaPropia.MatchString(linea) {
+		return Trace
+	}
+	return deCodigoHTTP(codigo)
 }
 
 func deCodigoHTTP(c int) Nivel {

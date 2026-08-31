@@ -74,8 +74,12 @@ func TestNivelJSONElCampoLevelGana(t *testing.T) {
 
 // Un 200 de healthcheck por minuto no es información: son 590 líneas por día
 // por cada Kong, y hay dos.
+//
+// El User-Agent del fixture es de un cliente CUALQUIERA a propósito: el de
+// nuestras propias sondas cambia el resultado en el rango 4xx, y ese caso lo
+// cubre TestNivelAccesoDeSondasPropias.
 func TestNivelAccesoHTTPPorCodigo(t *testing.T) {
-	const base = `172.19.0.2 - - [22/Aug/2026:07:37:48 +0000] "GET /auth/v1/health HTTP/1.1" %d 107 "-" "server-status"`
+	const base = `172.19.0.2 - - [22/Aug/2026:07:37:48 +0000] "GET /auth/v1/health HTTP/1.1" %d 107 "-" "curl/8.7.1"`
 	casos := []struct {
 		codigo int
 		quiero Nivel
@@ -230,5 +234,52 @@ func TestConjunto(t *testing.T) {
 		if got := Conjunto(c.entrada); !reflect.DeepEqual(got, c.quiero) {
 			t.Errorf("Conjunto(%v) = %v, quería %v", c.entrada, got, c.quiero)
 		}
+	}
+}
+
+// Un 401 contra nuestra propia sonda es un artefacto de la medición, no un
+// hecho del sistema: el destino de gym-tracker de egress-probe va SIN apikey a
+// propósito (internal/egress/sonda.go), así que Kong lo rechaza ~8600 veces por
+// día. Con eso en WARN, la sonda tapa el log que uno mira cuando algo se rompe.
+// El 401 de un cliente de verdad, en cambio, sigue siendo WARN: es una sesión
+// vencida en la app y hay que verla.
+func TestNivelAccesoDeSondasPropias(t *testing.T) {
+	casos := []struct {
+		nombre string
+		linea  string
+		quiero Nivel
+	}{
+		{
+			"401 de egress-probe es artefacto",
+			`172.19.0.2 - - [31/Aug/2026:19:50:30 +0000] "GET /auth/v1/health HTTP/1.1" 401 96 "-" "egress-probe"`,
+			Trace,
+		},
+		{
+			"404 del prober de producción es artefacto",
+			`172.19.0.2 - - [31/Aug/2026:19:50:30 +0000] "GET /no-existe HTTP/1.1" 404 96 "-" "server-status"`,
+			Trace,
+		},
+		{
+			"pero un 500 contra la sonda es noticia",
+			`172.19.0.2 - - [31/Aug/2026:19:50:30 +0000] "GET /auth/v1/health HTTP/1.1" 500 96 "-" "egress-probe"`,
+			Error,
+		},
+		{
+			"el 401 de un navegador de verdad sigue siendo WARN",
+			`172.19.0.2 - - [31/Aug/2026:15:34:35 +0000] "GET /rest/v1/workouts?select=id HTTP/1.1" 401 79 "https://gym-tracker-brown-one.vercel.app/" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"`,
+			Warn,
+		},
+		{
+			"el nombre de la sonda en la RUTA no la disfraza de sonda",
+			`172.19.0.2 - - [31/Aug/2026:15:34:35 +0000] "GET /egress-probe HTTP/1.1" 401 79 "-" "curl/8.7.1"`,
+			Warn,
+		},
+	}
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			if got := Clasificar(c.linea, "stdout"); got != c.quiero {
+				t.Errorf("Nivel = %q, quiero %q", got, c.quiero)
+			}
+		})
 	}
 }
