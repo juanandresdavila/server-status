@@ -1,6 +1,9 @@
 package logs
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // Regla baja o sube el nivel de las líneas que contienen un patrón.
 //
@@ -56,4 +59,34 @@ func (rs Reglas) Aplicar(n Nivel, linea, container string) Nivel {
 // borrado de una regla.
 func Nivelar(rs Reglas, linea, stream, container string) Nivel {
 	return rs.Aplicar(Clasificar(linea, stream), linea, container)
+}
+
+var (
+	// El "172.19.0.2 - - " del formato de acceso común. Se pide que lo siga el
+	// corchete de la fecha, y por eso el corchete se captura y se devuelve: sin
+	// esa condición, la regla se comería las tres primeras palabras de
+	// cualquier frase en prosa.
+	rePrefijoAcceso = regexp.MustCompile(`^\S+ \S+ \S+ (\[)`)
+
+	// [31/Aug/2026:19:50:30 +0000]
+	reFechaCorchete = regexp.MustCompile(`^\[\d{1,2}/[A-Za-z]{3}/\d{4}(?::\d{2}){3} [+-]\d{4}\]\s*`)
+
+	// 2026-08-31T19:50:30.123Z, 2026-08-22 07:38:00.012 UTC, con o sin zona.
+	reISOInicial = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?(?: [A-Z]{2,4})?\s*`)
+)
+
+// PatronSugerido saca de la línea la parte que se repite, tirando lo que la
+// hace única. En este orden: la IP inicial del formato de acceso, el corchete
+// de fecha, y un timestamp ISO-8601 al principio.
+//
+// Es un PUNTO DE PARTIDA EDITABLE, no una promesa. Que el adivinador falle no
+// rompe nada: el campo se corrige a mano y el conteo previo dice si el patrón
+// quedó demasiado ancho o demasiado angosto. Que el conteo mienta sí rompería
+// algo, y por eso ahí no hay heurística ninguna.
+func PatronSugerido(linea string) string {
+	p := strings.TrimSpace(linea)
+	p = rePrefijoAcceso.ReplaceAllString(p, "$1")
+	p = reFechaCorchete.ReplaceAllString(p, "")
+	p = reISOInicial.ReplaceAllString(p, "")
+	return strings.TrimSpace(p)
 }

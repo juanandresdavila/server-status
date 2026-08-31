@@ -77,3 +77,47 @@ func TestNivelarComponeClasificarYReglas(t *testing.T) {
 		t.Errorf("con la regla puesta Nivelar = %q, quiero TRACE", got)
 	}
 }
+
+// Las dos primeras líneas son reales: la de Kong es la misma que ya usa
+// nivel_test.go, y la de Postgres tiene el formato exacto que loguean los dos
+// Supabase. El acierto medido de la primera fue 8625 de 8625.
+func TestPatronSugerido(t *testing.T) {
+	casos := []struct {
+		nombre, linea, quiero string
+	}{
+		{
+			"acceso de Kong: se van la IP y el corchete de fecha",
+			`172.19.0.2 - - [31/Aug/2026:19:50:30 +0000] "GET /auth/v1/health HTTP/1.1" 401 96 "-" "egress-probe"`,
+			`"GET /auth/v1/health HTTP/1.1" 401 96 "-" "egress-probe"`,
+		},
+		{
+			// El pid entre corchetes SOBREVIVE, y está bien que se vea: el
+			// campo es editable y el conteo previo dice enseguida que un
+			// patrón con pid matchea muy poco.
+			"Postgres: se va el timestamp con su zona",
+			` 2026-08-22 07:38:00.012 UTC [38] LOG:  cron job 1 completed: 0 rows`,
+			`[38] LOG:  cron job 1 completed: 0 rows`,
+		},
+		{
+			"ISO-8601 con T y Z al principio",
+			`2026-08-31T19:50:30.123Z Schema cache loaded 13 Relations, 24 Relationships`,
+			`Schema cache loaded 13 Relations, 24 Relationships`,
+		},
+		{
+			// Sin esto, "el proceso arrancó bien" quedaría en "arrancó bien":
+			// tres palabras comidas de una frase común.
+			"una línea en prosa vuelve entera",
+			`el proceso arrancó bien y no hay nada que sacarle`,
+			`el proceso arrancó bien y no hay nada que sacarle`,
+		},
+		{"una línea vacía no explota", "", ""},
+	}
+
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			if got := PatronSugerido(c.linea); got != c.quiero {
+				t.Errorf("PatronSugerido = %q\nquiero          %q", got, c.quiero)
+			}
+		})
+	}
+}
