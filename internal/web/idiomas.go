@@ -104,6 +104,21 @@ var textos = map[string]texto{
 	"crear-regla":      {"crear la regla", "create the rule"},
 	"cancelar":         {"cancelar", "cancel"},
 
+	"reglas-titulo": {"reglas de nivel", "level rules"},
+	"reglas-nota": {
+		"Cambian el nivel guardado de las líneas que contienen el patrón, las viejas y las que vengan. Borrar una devuelve esas líneas a su nivel original. Nada de esto toca los avisos de Telegram.",
+		"They change the stored level of every line containing the pattern, old and new. Deleting one puts those lines back to their original level. None of this touches Telegram alerts.",
+	},
+	// Sin plural en el número: "1 reglas activas" se lee como un bug.
+	"reglas-activas": {"reglas activas: %d", "active rules: %d"},
+	"cambiar-nivel":  {"hacer una regla con esta línea", "make a rule from this line"},
+	"patron-col":     {"Patrón", "Pattern"},
+	"nivel-col":      {"Nivel", "Level"},
+	"creada-col":     {"Creada", "Created"},
+	"coincidencias":  {"líneas hoy", "lines today"},
+	"borrar":         {"borrar", "delete"},
+	"sin-reglas":     {"no hay ninguna regla puesta", "no rules set"},
+
 	// tail
 	"conectando":   {"conectando…", "connecting…"},
 	"en-vivo":      {"en vivo", "live"},

@@ -1128,3 +1128,89 @@ func TestUnaReglaIncompletaNoSeCrea(t *testing.T) {
 		}
 	}
 }
+
+// La lista es donde se ve una regla que creció en silencio: cuántas líneas
+// matchea HOY, no cuántas matcheaba el día que se creó.
+func TestLaListaDeReglasMuestraTodoLoQueHaceFaltaParaBorrarla(t *testing.T) {
+	cuerpo := pedir(t, "/logs/reglas").Body.String()
+
+	for _, quiero := range []string{
+		"es nuestra propia sonda",        // el motivo
+		"supabase-kong",                  // el scope
+		"TRACE",                          // el nivel que impone
+		"31/08/2026",                     // cuándo se creó, en fecha completa
+		"42",                             // cuántas líneas matchea hoy
+		`action="/logs/reglas/3/borrar"`, // y cómo deshacerla
+	} {
+		if !strings.Contains(cuerpo, quiero) {
+			t.Errorf("la lista no muestra %q", quiero)
+		}
+	}
+}
+
+func TestBorrarUnaReglaDesdeElPanel(t *testing.T) {
+	e := &espiaReglas{}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/logs/reglas/3/borrar",
+		strings.NewReader("volver=%2Flogs%2Freglas"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther || e.borrada != 3 {
+		t.Fatalf("código=%d borrada=%d, quería 303 y 3", rec.Code, e.borrada)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/logs/reglas" {
+		t.Errorf("Location = %q, quería /logs/reglas", loc)
+	}
+
+	// Un destino de afuera no se sigue: el panel es privado, pero un open
+	// redirect privado sigue siendo un open redirect.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("POST", "/logs/reglas/3/borrar",
+		strings.NewReader("volver=%2F%2Fjadd.com.ar%2Frobo"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec, req)
+	if loc := rec.Header().Get("Location"); loc != "/" {
+		t.Errorf("Location = %q, quería /", loc)
+	}
+
+	// Un id que no es número es un 400, no un panic.
+	rec = httptest.NewRecorder()
+	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec,
+		httptest.NewRequest("POST", "/logs/reglas/basura/borrar", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("id inválido: código = %d, quería 400", rec.Code)
+	}
+}
+
+// Un filtro que te olvidaste que pusiste es peor que no tener filtro.
+func TestElEncabezadoDeLogsAvisaDeLasReglas(t *testing.T) {
+	cuerpo := pedir(t, "/logs").Body.String()
+	if !strings.Contains(cuerpo, "reglas activas: 1") {
+		t.Error("el encabezado de /logs no dice cuántas reglas hay puestas")
+	}
+	if !strings.Contains(cuerpo, `href="/logs/reglas"`) {
+		t.Error("el aviso no linkea a la lista")
+	}
+}
+
+// El control es la celda del nivel: click en el nivel para cambiar el nivel.
+// Así no hace falta una columna nueva ni una línea de JS.
+func TestCadaLineaOfreceHacerUnaRegla(t *testing.T) {
+	cuerpo := pedir(t, "/logs?horas=6").Body.String()
+	if !strings.Contains(cuerpo, "/logs/reglas/nueva?rowid=99") {
+		t.Error("la fila no linkea a crear una regla con esa línea")
+	}
+	if !strings.Contains(cuerpo, "volver=") {
+		t.Error("el link no lleva a dónde volver")
+	}
+}
+
+func TestLosTextosDeReglasEstanEnLosDosIdiomas(t *testing.T) {
+	if cuerpo := pedir(t, "/logs/reglas?lang=en").Body.String(); !strings.Contains(cuerpo, "lines today") {
+		t.Error("la lista de reglas no se traduce")
+	}
+	if cuerpo := pedir(t, "/logs?lang=en").Body.String(); !strings.Contains(cuerpo, "active rules: 1") {
+		t.Error("el aviso del encabezado no se traduce")
+	}
+}

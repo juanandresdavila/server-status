@@ -70,7 +70,7 @@ func plantillasCon(idioma string) *template.Template {
 		"lang": func() string { return idioma },
 	}).ParseFS(plantillas, "plantillas/nav.html", "plantillas/panel.html",
 		"plantillas/logs.html", "plantillas/tail.html", "plantillas/eventos.html",
-		"plantillas/regla-nueva.html"))
+		"plantillas/regla-nueva.html", "plantillas/reglas.html"))
 }
 
 var plantillasIdioma = map[string]*template.Template{
@@ -281,6 +281,15 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 			}
 		}
 
+		// Un error leyendo las reglas no puede tumbar el visor de logs, que es
+		// justo lo que uno abre cuando algo se rompió.
+		aviso := ""
+		if rs, err := d.ReglasNivel(); err != nil {
+			slog.Error("no se pudieron leer las reglas de nivel", "err", err)
+		} else if len(rs) > 0 {
+			aviso = fmt.Sprintf(tr(idioma, "reglas-activas"), len(rs))
+		}
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		errPlantilla := plantillasIdioma[idioma].ExecuteTemplate(w, "logs.html", struct {
 			Nav          nav
@@ -300,6 +309,11 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 			// está prendido: con desde/hasta explícitos uno mira el pasado, y
 			// pegar líneas nuevas arriba mentiría sobre la ventana que pidió.
 			EnVivo bool
+			// Reglas es cuántas hay puestas, para avisarlo en el encabezado:
+			// un filtro que uno se olvidó que puso es peor que no tener
+			// filtro. Volver es a dónde vuelve la creación de una regla.
+			Reglas string
+			Volver string
 		}{
 			Nav:  armarNav("logs", v.Horas, q.Get("container")),
 			Zona: zona,
@@ -307,6 +321,7 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 			Horas: v.Horas, Ventana: v, Truncado: truncado,
 			Containers: nombres, Lineas: lineas, Niveles: togglesDe(niveles), Rangos: rangos,
 			Limite: limite, Topes: topesVista, Cursor: cursor, EnVivo: !v.Explicita,
+			Reglas: aviso, Volver: rutaPropia(r.URL.RequestURI()),
 		})
 		if errPlantilla != nil {
 			// El cuerpo ya se empezó a escribir, así que no se puede devolver un
@@ -439,6 +454,57 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 			http.Redirect(w, r, rutaPropia(r.FormValue("volver")), http.StatusSeeOther)
 		}
 	}
+	mux.HandleFunc("GET /logs/reglas", func(w http.ResponseWriter, r *http.Request) {
+		idioma := idiomaDe(w, r)
+		rs, err := d.ReglasNivel()
+		if err != nil {
+			http.Error(w, "no se pudieron leer las reglas", http.StatusInternalServerError)
+			return
+		}
+
+		v := vistaReglas{
+			Nav: armarNav("logs", horasDe(r), ""), Zona: zona,
+			Volver: rutaPropia(r.URL.RequestURI()),
+		}
+		for _, regla := range rs {
+			// Una consulta por regla, y cada una es un scan completo de la tabla
+			// FTS5. Son unas pocas reglas y esta página se abre a mano: no vale la
+			// pena una consulta agrupada que igual tendría que evaluar instr() por
+			// fila y por regla.
+			n, err := d.ContarPorPatron(regla.Patron, regla.Container)
+			if err != nil {
+				// Sin el conteo la fila igual sirve para borrar la regla, que es
+				// lo urgente. Tirar la página entera abajo por esto sería peor.
+				slog.Error("no se pudieron contar las coincidencias de la regla",
+					"id", regla.ID, "err", err)
+			}
+			v.Reglas = append(v.Reglas, filaRegla{ReglaNivel: regla, Coincidencias: n})
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := plantillasIdioma[idioma].ExecuteTemplate(w, "reglas.html", v); err != nil {
+			slog.Error("no se pudo renderizar la lista de reglas", "err", err)
+		}
+	})
+
+	mux.HandleFunc("POST /logs/reglas/{id}/borrar", func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			http.Error(w, "id inválido", http.StatusBadRequest)
+			return
+		}
+		// Devuelve las filas afectadas a Clasificar más las reglas que quedan: el
+		// undo es exacto. Y puede tardar segundos, igual que crear.
+		filas, err := d.BorrarReglaNivel(id)
+		if err != nil {
+			slog.Error("no se pudo borrar la regla de nivel", "id", id, "err", err)
+			http.Error(w, "no se pudo borrar la regla", http.StatusInternalServerError)
+			return
+		}
+		slog.Info("regla de nivel borrada", "id", id, "filas", filas)
+		http.Redirect(w, r, rutaPropia(r.FormValue("volver")), http.StatusSeeOther)
+	})
+
 	mux.HandleFunc("GET /logs/reglas/nueva", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		idioma := idiomaDe(w, r)
@@ -726,6 +792,20 @@ func (v Ventana) ValorHasta() string {
 		return ""
 	}
 	return v.en(v.Hasta).Format(formLocal)
+}
+
+// filaRegla es una regla con lo que matchea HOY. El conteo del día que se creó
+// no sirve para decidir si borrarla: lo que importa es si creció.
+type filaRegla struct {
+	model.ReglaNivel
+	Coincidencias int
+}
+
+type vistaReglas struct {
+	Nav    nav
+	Zona   *time.Location
+	Reglas []filaRegla
+	Volver string
 }
 
 // vistaRegla es el form de una regla nueva con su conteo previo.
