@@ -945,6 +945,92 @@ func (s *Store) CrearReglaNivel(r model.ReglaNivel) (int64, int, error) {
 	return id, int(n), nil
 }
 
+// BorrarReglaNivel saca la regla y devuelve las filas que tocaba al nivel que
+// les corresponde SIN ella. El undo es exacto y no aproximado porque
+// Clasificar es determinística: sin esto, una regla sería un cambio
+// irreversible sobre datos.
+//
+// Se re-aplican las reglas que QUEDAN y no solo Clasificar: si dos reglas
+// pisan la misma línea, borrar una no puede llevarse el efecto de la otra. Es
+// la misma composición que usa la ingesta, logs.Nivelar, y por eso el nivel
+// guardado siempre termina siendo el mismo que tendría una línea recién
+// entrada.
+//
+// ⚠️ Vale la misma advertencia que CrearReglaNivel: son decenas de miles de
+// filas sobre la única conexión a SQLite, y mientras dura el ciclo del minuto
+// espera. Las filas se leen ENTERAS a memoria antes de escribir porque con una
+// sola conexión no se puede escribir con un cursor de lectura abierto; son unos
+// pocos MB para el caso medido.
+//
+// Una regla que no existe devuelve 0 y nil: el segundo click del panel no es
+// un error.
+func (s *Store) BorrarReglaNivel(id int64) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var patron, container string
+	err = tx.QueryRow(`SELECT patron, container FROM reglas_nivel WHERE id = ?`, id).
+		Scan(&patron, &container)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`DELETE FROM reglas_nivel WHERE id = ?`, id); err != nil {
+		return 0, err
+	}
+
+	quedan, err := leerReglas(tx)
+	if err != nil {
+		return 0, err
+	}
+	reglas := reglasDe(quedan)
+
+	donde, args := dondeCoincide(patron, container)
+	filas, err := tx.Query(`SELECT l.rowid, l.linea, l.stream, l.container FROM logs l`+donde, args...)
+	if err != nil {
+		return 0, err
+	}
+	type fila struct {
+		rowid                    int64
+		linea, stream, container string
+	}
+	var fs []fila
+	for filas.Next() {
+		var f fila
+		if err := filas.Scan(&f.rowid, &f.linea, &f.stream, &f.container); err != nil {
+			filas.Close()
+			return 0, err
+		}
+		fs = append(fs, f)
+	}
+	filas.Close()
+	if err := filas.Err(); err != nil {
+		return 0, err
+	}
+
+	stmt, err := tx.Prepare(`INSERT INTO log_niveles (rowid, nivel) VALUES (?,?)
+		ON CONFLICT(rowid) DO UPDATE SET nivel = excluded.nivel`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	for _, f := range fs {
+		nivel := logs.Nivelar(reglas, f.linea, f.stream, f.container)
+		if _, err := stmt.Exec(f.rowid, string(nivel)); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(fs), nil
+}
+
 // dondeCoincide es la ÚNICA definición SQL de "esta línea matchea el patrón".
 // La usan el conteo previo, la aplicación retroactiva y el borrado, así que los
 // tres no pueden diferir ni queriendo.

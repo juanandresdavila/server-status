@@ -635,6 +635,19 @@ func lineas(base time.Time, cont string, textos ...string) []model.LineaLog {
 	return out
 }
 
+// lineasNiveladas es lo mismo que lineas pero con el nivel puesto, que es como
+// entran en producción: la ingesta guarda logs.Nivelar y no un INFO por
+// defecto. Un test que compare "el nivel de antes" contra "el nivel después de
+// deshacer" tiene que partir de acá, o compara el INFO del helper contra lo que
+// dice el clasificador y falla sin que haya nada roto.
+func lineasNiveladas(base time.Time, cont string, textos ...string) []model.LineaLog {
+	out := lineas(base, cont, textos...)
+	for i := range out {
+		out[i].Nivel = string(logs.Clasificar(out[i].Linea, out[i].Stream))
+	}
+	return out
+}
+
 func TestInsertLogsYBusquedaPorTexto(t *testing.T) {
 	s := abrir(t)
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
@@ -1425,5 +1438,101 @@ func TestLaReglaAlcanzaALasFilasSinNivel(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Linea != "ruido de la sonda" {
 		t.Errorf("got = %+v, quería la línea sin nivel ya en TRACE", got)
+	}
+}
+
+// El undo es EXACTO y no aproximado: el nivel que queda es el que tendría la
+// línea si la regla no hubiera existido nunca. Se puede porque Clasificar es
+// determinística.
+func TestBorrarUnaReglaDevuelveElNivelOriginal(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineasNiveladas(base, "supabase-kong", corpusReal...)); err != nil {
+		t.Fatal(err)
+	}
+
+	antes, err := s.BuscarLogs("", "supabase-kong", []string{"TRACE", "INFO", "WARN", "ERROR"},
+		time.Time{}, base.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, filas, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "egress-probe", Nivel: "TRACE", Motivo: "sonda propia", Creada: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deshechas, err := s.BorrarReglaNivel(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deshechas != filas {
+		t.Errorf("borrar tocó %d filas y crear había tocado %d", deshechas, filas)
+	}
+
+	despues, err := s.BuscarLogs("", "supabase-kong", []string{"TRACE", "INFO", "WARN", "ERROR"},
+		time.Time{}, base.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(antes) != len(despues) {
+		t.Fatalf("cambió la cantidad de líneas: %d contra %d", len(antes), len(despues))
+	}
+	for i := range antes {
+		if antes[i].Linea != despues[i].Linea || antes[i].Nivel != despues[i].Nivel {
+			t.Errorf("línea %q quedó en %q y era %q", despues[i].Linea, despues[i].Nivel, antes[i].Nivel)
+		}
+	}
+
+	if rs, err := s.ReglasNivel(); err != nil || len(rs) != 0 {
+		t.Errorf("reglas = %+v err = %v, quería ninguna", rs, err)
+	}
+}
+
+// Con dos reglas encima de la misma línea, borrar una no puede llevarse el
+// efecto de la otra. Por eso el undo re-aplica las reglas que quedan y no
+// solamente Clasificar.
+func TestBorrarUnaReglaNoSeLlevaLaOtra(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "kong", corpusReal[0])); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "egress-probe", Nivel: "INFO", Motivo: "primera", Creada: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	segunda, _, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "auth/v1/health", Nivel: "TRACE", Motivo: "segunda", Creada: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.BorrarReglaNivel(segunda); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.BuscarLogs("", "", []string{"TRACE", "INFO", "WARN", "ERROR"},
+		time.Time{}, base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Nivel != "INFO" {
+		t.Errorf("quedó en %+v, quería INFO: borrar la segunda se llevó la primera", got)
+	}
+}
+
+// Borrar dos veces la misma regla no es un error: el segundo click no puede
+// devolver un 500.
+func TestBorrarUnaReglaQueNoEstaNoEsError(t *testing.T) {
+	s := abrir(t)
+	n, err := s.BorrarReglaNivel(404)
+	if err != nil || n != 0 {
+		t.Errorf("n=%d err=%v, quería 0 y nil", n, err)
 	}
 }
