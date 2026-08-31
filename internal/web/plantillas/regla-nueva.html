@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ t "regla-nueva" }} · server-status</title>
+<style>
+  :root { color-scheme: light dark; --borde:#8883; --err:#c0392b; --warn:#b7791f; --ok:#1a7f4b; }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.5 system-ui, -apple-system, sans-serif; margin: 0; padding: 1.5rem;
+         max-width: 60rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+  label { display: block; font-size: .8rem; opacity: .6; margin-bottom: .2rem; }
+  input, select, button, textarea { font: inherit; padding: .4rem .6rem; border-radius: .4rem;
+                          border: 1px solid var(--borde); background: transparent; color: inherit; }
+  .campo { margin-bottom: .9rem; }
+  .campo input[type=text] { width: 100%; }
+  .linea { font: 12.5px/1.6 ui-monospace, Menlo, monospace; border: 1px solid var(--borde);
+           border-radius: .5rem; padding: .6rem .75rem; margin-bottom: 1.25rem;
+           white-space: pre-wrap; word-break: break-word; opacity: .75; }
+  .conteo { border: 1px solid var(--borde); border-left: 3px solid var(--warn);
+            border-radius: .4rem; padding: .7rem .9rem; margin: 1rem 0; }
+  .conteo b { font-size: 1.15rem; }
+  .acciones { display: flex; gap: .5rem; align-items: center; }
+{{ template "nav-css" }}
+</style>
+</head>
+<body>
+{{ template "nav" .Nav }}
+
+<h1>{{ t "regla-nueva" }}</h1>
+
+{{ with .Linea }}<div class="linea">{{ . }}</div>{{ end }}
+
+{{/* UN solo form. El botón de recalcular cambia método y destino con
+     formmethod/formaction, igual que el de exportar en /logs: con dos forms
+     separados, editar el patrón en uno y confirmar en el otro mandaría los
+     valores viejos. */}}
+<form method="post" action="/logs/reglas">
+  {{/* El botón oculto va PRIMERO para que Enter recalcule y no cree la regla
+       sin haber visto el número. */}}
+  <button hidden tabindex="-1" aria-hidden="true" formmethod="get" formaction="/logs/reglas/nueva"></button>
+  <input type="hidden" name="volver" value="{{ .Volver }}">
+  <input type="hidden" name="linea" value="{{ .Linea }}">
+  <input type="hidden" name="actual" value="{{ .Actual }}">
+
+  <div class="campo">
+    <label for="patron">{{ t "patron" }}</label>
+    <input type="text" id="patron" name="patron" value="{{ .Patron }}" autofocus>
+  </div>
+  <div class="campo">
+    <label for="container">{{ t "container" }}</label>
+    <input type="text" id="container" name="container" value="{{ .Container }}" placeholder="{{ t "todos" }}">
+  </div>
+  <div class="campo">
+    <label for="nivel">{{ t "nivel-nuevo" }}{{ with .Actual }} ({{ t "nivel-actual" }} {{ . }}){{ end }}</label>
+    <select id="nivel" name="nivel">
+      {{ range $n := $.Niveles }}<option value="{{ $n }}"{{ if eq $n $.Nivel }} selected{{ end }}>{{ $n }}</option>{{ end }}
+    </select>
+  </div>
+  <div class="campo">
+    <label for="motivo">{{ t "motivo" }}</label>
+    <input type="text" id="motivo" name="motivo" value="{{ .Motivo }}" placeholder="{{ t "motivo-ph" }}" required>
+  </div>
+
+  {{ if .HayConteo }}
+  <div class="conteo"><b>{{ .Afectadas }}</b> {{ t "lineas-afectadas" }}</div>
+  {{ end }}
+
+  <div class="acciones">
+    <button type="submit" formmethod="get" formaction="/logs/reglas/nueva">{{ t "recalcular" }}</button>
+    <button type="submit">{{ t "crear-regla" }}</button>
+    <a href="{{ .Volver }}">{{ t "cancelar" }}</a>
+  </div>
+</form>
+</body>
+</html>

@@ -91,6 +91,19 @@ var textos = map[string]texto{
 	"en-vivo-toggle": {"en vivo", "live"},
 	"tope":           {"tope", "cap"},
 
+	// reglas de nivel
+	"regla-nueva":      {"regla de nivel", "level rule"},
+	"patron":           {"patrón (la línea tiene que contenerlo, tal cual, respetando mayúsculas)", "pattern (the line must contain it, exactly, case-sensitive)"},
+	"container":        {"container", "container"},
+	"nivel-nuevo":      {"nivel que le queda", "level it gets"},
+	"nivel-actual":     {"hoy", "now"},
+	"motivo":           {"motivo", "reason"},
+	"motivo-ph":        {"por qué esto no es lo que el clasificador cree", "why this isn't what the classifier thinks"},
+	"lineas-afectadas": {"líneas guardadas cambian de nivel al confirmar", "stored lines change level on confirm"},
+	"recalcular":       {"recalcular", "recount"},
+	"crear-regla":      {"crear la regla", "create the rule"},
+	"cancelar":         {"cancelar", "cancel"},
+
 	// tail
 	"conectando":   {"conectando…", "connecting…"},
 	"en-vivo":      {"en vivo", "live"},
