@@ -91,6 +91,11 @@ type LineaLog struct {
 	Stream    string // stdout | stderr
 	Linea     string
 	Nivel     string // TRACE | INFO | WARN | ERROR
+
+	// Rowid es el de la tabla FTS5, y es lo que identifica una línea guardada.
+	// Vale 0 en una línea que todavía no se insertó. El panel lo usa para
+	// linkear "hacer una regla de nivel con esta línea".
+	Rowid int64
 }
 
 // ReglaNivel es una corrección guardada del nivel de una línea: "todo lo que

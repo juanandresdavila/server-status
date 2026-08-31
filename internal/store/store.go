@@ -781,7 +781,7 @@ func (s *Store) MaxRowidLogs() (int64, error) {
 // Devuelve las líneas de la más nueva a la más vieja, igual que BuscarLogs,
 // para que la vista las pueda pegar arriba sin reordenar nada.
 func (s *Store) LogsDesdeRowid(texto, container string, niveles []string, desde int64, limite int) ([]model.LineaLog, int64, error) {
-	q := selectLogsConRowid + ` WHERE l.rowid > ?`
+	q := selectLogs + ` WHERE l.rowid > ?`
 	args := []any{desde}
 	q, args = filtroLogs(q, args, texto, container, niveles)
 
@@ -814,11 +814,22 @@ func (s *Store) LogsDesdeRowid(texto, container string, niveles []string, desde 
 // COALESCE porque una fila insertada antes de la migración 9 todavía puede no
 // tener nivel si el backfill no llegó: se la trata como INFO en vez de hacerla
 // desaparecer.
-const selectLogs = `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO'), 0
+//
+// El rowid viene SIEMPRE. Antes había dos constantes, una con un 0 literal en
+// su lugar, y eso dejaba a la vista sin forma de referirse a una línea.
+const selectLogs = `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO'), l.rowid
 	      FROM logs l LEFT JOIN log_niveles n ON n.rowid = l.rowid`
 
-const selectLogsConRowid = `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO'), l.rowid
-	      FROM logs l LEFT JOIN log_niveles n ON n.rowid = l.rowid`
+// LineaPorRowid trae una línea guardada por su id. Es lo que prellena el form
+// de una regla nueva. El bool es false cuando la línea ya no está: la
+// retención la puede haber podado entre que se pintó la vista y se hizo click.
+func (s *Store) LineaPorRowid(rowid int64) (model.LineaLog, bool, error) {
+	ls, _, err := s.consultarLogs(selectLogs+` WHERE l.rowid = ?`, []any{rowid})
+	if err != nil || len(ls) == 0 {
+		return model.LineaLog{}, false, err
+	}
+	return ls[0], true, nil
+}
 
 // filtroLogs pega los filtros que comparten la vista y el modo en vivo. Vive
 // en un solo lugar porque el día que se agregue uno y se olvide de la otra
@@ -1085,6 +1096,7 @@ func (s *Store) consultarLogs(q string, args []any) ([]model.LineaLog, int64, er
 			return nil, 0, err
 		}
 		l.TS = time.Unix(ts, 0).UTC()
+		l.Rowid = rowid
 		if rowid > max {
 			max = rowid
 		}

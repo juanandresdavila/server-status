@@ -1577,3 +1577,38 @@ func TestBackfillLePasaElContainer(t *testing.T) {
 		t.Errorf("got = %+v, quería solo la línea de db en ERROR", got)
 	}
 }
+
+// La vista necesita el rowid para poder linkear a "hacer una regla con esta
+// línea". Antes se descartaba a propósito en selectLogs, con un 0 literal.
+func TestBuscarLogsTraeElRowid(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "kong", "una", "dos")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.BuscarLogs("", "", nil, time.Time{}, base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d líneas, quería 2", len(got))
+	}
+	for _, l := range got {
+		if l.Rowid == 0 {
+			t.Errorf("la línea %q volvió sin rowid", l.Linea)
+		}
+	}
+
+	l, hay, err := s.LineaPorRowid(got[0].Rowid)
+	if err != nil || !hay {
+		t.Fatalf("LineaPorRowid: hay=%v err=%v", hay, err)
+	}
+	if l.Linea != got[0].Linea || l.Container != "kong" || l.Nivel != got[0].Nivel {
+		t.Errorf("volvió %+v, quería %+v", l, got[0])
+	}
+
+	if _, hay, err := s.LineaPorRowid(99999); err != nil || hay {
+		t.Errorf("un rowid que no existe: hay=%v err=%v, quería false y nil", hay, err)
+	}
+}
