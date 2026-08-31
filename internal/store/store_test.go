@@ -1011,7 +1011,7 @@ func TestBackfillClasificaLasFilasViejas(t *testing.T) {
 	}
 
 	// Un clasificador de tres líneas: es justo lo que el parámetro hace posible.
-	clasificar := func(linea, stream string) string {
+	clasificar := func(linea, stream, container string) string {
 		if linea == "tres" {
 			return "ERROR"
 		}
@@ -1048,7 +1048,7 @@ func TestBackfillClasificaLasFilasViejas(t *testing.T) {
 // reprocesaría las 802 200 filas de la base del VPS.
 func TestBackfillNoRepiteCuandoYaTermino(t *testing.T) {
 	s := abrir(t)
-	n, listo, err := s.BackfillNiveles(func(l, st string) string { return "INFO" }, 100)
+	n, listo, err := s.BackfillNiveles(func(l, st, c string) string { return "INFO" }, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1534,5 +1534,46 @@ func TestBorrarUnaReglaQueNoEstaNoEsError(t *testing.T) {
 	n, err := s.BorrarReglaNivel(404)
 	if err != nil || n != 0 {
 		t.Errorf("n=%d err=%v, quería 0 y nil", n, err)
+	}
+}
+
+// El backfill tiene que pasarle el container a quien nivela: una regla puede
+// estar acotada a un container, y sin ese dato la reprocesada de las filas
+// viejas la ignoraría en silencio.
+func TestBackfillLePasaElContainer(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "kong", "una", "dos")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertLogs(lineas(base, "db", "una")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReiniciarBackfillParaTest(); err != nil {
+		t.Fatal(err)
+	}
+
+	nivelar := func(linea, stream, container string) string {
+		if container == "db" {
+			return "ERROR"
+		}
+		return "TRACE"
+	}
+	for i := 0; i < 10; i++ {
+		_, listo, err := s.BackfillNiveles(nivelar, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listo {
+			break
+		}
+	}
+
+	got, err := s.BuscarLogs("", "", []string{"ERROR"}, time.Time{}, base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Container != "db" {
+		t.Errorf("got = %+v, quería solo la línea de db en ERROR", got)
 	}
 }

@@ -1188,13 +1188,14 @@ func (s *Store) BorrarLogsAnterioresA(corte time.Time) error {
 // BackfillNiveles clasifica un lote de las líneas que ya estaban guardadas
 // cuando se aplicó la migración 9. Devuelve cuántas procesó y si ya terminó.
 //
-// El clasificador entra por parámetro y no por import para que el store no
-// dependa de internal/logs — la misma razón por la que rules declara su propia
-// interfaz Store. Y así el backfill se testea con una función de tres líneas.
+// Quien nivela entra por parámetro para que el backfill se pueda testear con
+// una función de tres líneas. Recibe también el CONTAINER porque una regla de
+// nivel puede estar acotada a uno: sin ese dato, la reprocesada de las filas
+// viejas ignoraría el scope en silencio.
 //
 // Va por lotes y guarda por dónde iba: son 802 200 filas en la base del VPS y
 // hacerlo de una dejaría el arranque bloqueado varios minutos.
-func (s *Store) BackfillNiveles(clasificar func(linea, stream string) string, lote int) (int, bool, error) {
+func (s *Store) BackfillNiveles(nivelar func(linea, stream, container string) string, lote int) (int, bool, error) {
 	var techo, ultimo int64
 	err := s.db.QueryRow(`SELECT hasta_rowid, ultimo FROM backfill_niveles WHERE id = 1`).Scan(&techo, &ultimo)
 	if err != nil {
@@ -1205,19 +1206,19 @@ func (s *Store) BackfillNiveles(clasificar func(linea, stream string) string, lo
 	}
 
 	filas, err := s.db.Query(`
-		SELECT rowid, linea, stream FROM logs
+		SELECT rowid, linea, stream, container FROM logs
 		WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`, ultimo, techo, lote)
 	if err != nil {
 		return 0, false, err
 	}
 	type fila struct {
-		rowid         int64
-		linea, stream string
+		rowid                    int64
+		linea, stream, container string
 	}
 	var fs []fila
 	for filas.Next() {
 		var f fila
-		if err := filas.Scan(&f.rowid, &f.linea, &f.stream); err != nil {
+		if err := filas.Scan(&f.rowid, &f.linea, &f.stream, &f.container); err != nil {
 			filas.Close()
 			return 0, false, err
 		}
@@ -1249,7 +1250,7 @@ func (s *Store) BackfillNiveles(clasificar func(linea, stream string) string, lo
 	defer stmt.Close()
 
 	for _, f := range fs {
-		if _, err := stmt.Exec(f.rowid, clasificar(f.linea, f.stream)); err != nil {
+		if _, err := stmt.Exec(f.rowid, nivelar(f.linea, f.stream, f.container)); err != nil {
 			return 0, false, err
 		}
 	}
