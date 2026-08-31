@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -70,8 +71,8 @@ func TestUltimaMigracionAplicada(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 11 {
-		t.Errorf("versión = %d, quería 11", v)
+	if v != 12 {
+		t.Errorf("versión = %d, quería 12", v)
 	}
 }
 
@@ -1271,5 +1272,158 @@ func TestGoYSQLCuentanIgual(t *testing.T) {
 				t.Errorf("patrón %q container %q: SQL contó %d y Go %d", p, c, enSQL, enGo)
 			}
 		}
+	}
+}
+
+// Las reglas vuelven en orden de id, que es el orden en que se aplican: gana
+// la última que matchea. Si el SELECT no lo fija, el desempate pasa a depender
+// de cómo le pinte a SQLite devolver las filas.
+func TestReglasNivelRoundTrip(t *testing.T) {
+	s := abrir(t)
+	creada := time.Date(2026, 8, 31, 20, 0, 0, 0, time.UTC)
+
+	primera, _, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "egress-probe", Container: "", Nivel: "TRACE",
+		Motivo: "es nuestra propia sonda", Creada: creada,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	segunda, _, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "cron job", Container: "supabase-db", Nivel: "ERROR",
+		Motivo: "quiero verlo en la línea de tiempo", Creada: creada.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rs, err := s.ReglasNivel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 2 || rs[0].ID != primera || rs[1].ID != segunda {
+		t.Fatalf("reglas = %+v, quería las dos en orden de id", rs)
+	}
+	if rs[0].Motivo != "es nuestra propia sonda" || !rs[0].Creada.Equal(creada) {
+		t.Errorf("la primera volvió incompleta: %+v", rs[0])
+	}
+	if rs[1].Container != "supabase-db" || rs[1].Nivel != "ERROR" {
+		t.Errorf("la segunda volvió incompleta: %+v", rs[1])
+	}
+
+	aplicar, err := s.ReglasParaAplicar()
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiero := logs.Reglas{
+		{Patron: "egress-probe", Container: "", Nivel: logs.Trace},
+		{Patron: "cron job", Container: "supabase-db", Nivel: logs.Error},
+	}
+	if !reflect.DeepEqual(aplicar, quiero) {
+		t.Errorf("ReglasParaAplicar = %+v, quería %+v", aplicar, quiero)
+	}
+}
+
+// LA afirmación central: el número que se muestra antes de confirmar es el
+// número de filas que quedan cambiadas. Si divergen, el preview es decorativo.
+//
+// La regla SUBE a ERROR en vez de bajar a TRACE a propósito: el 401 de la
+// sonda propia ya es TRACE desde el arreglo del clasificador, así que una
+// regla a TRACE no dejaría ver ninguna diferencia y este test pasaría igual
+// con la aplicación retroactiva rota. De paso ejercita la otra dirección, que
+// también existe: subir algo que el clasificador subestimó.
+func TestElPreviewEsExactamenteElEfecto(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "supabase-kong", corpusReal...)); err != nil {
+		t.Fatal(err)
+	}
+	// La MISMA línea en otro container: la regla está acotada y no la toca.
+	if err := s.InsertLogs(lineas(base, "otro-kong", corpusReal[0])); err != nil {
+		t.Fatal(err)
+	}
+
+	const patron = `"-" "egress-probe"`
+	previo, err := s.ContarPorPatron(patron, "supabase-kong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if previo != 2 {
+		t.Fatalf("el preview contó %d, quería las 2 líneas de la sonda", previo)
+	}
+
+	_, filas, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: patron, Container: "supabase-kong", Nivel: "ERROR",
+		Motivo: "quiero verla en la línea de tiempo", Creada: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filas != previo {
+		t.Errorf("el preview dijo %d y cambiaron %d filas", previo, filas)
+	}
+
+	// Y el efecto se ve donde importa, que es la vista.
+	enError, err := s.BuscarLogs("", "supabase-kong", []string{"ERROR"},
+		time.Time{}, base.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quedaron := 0
+	for _, l := range enError {
+		if strings.Contains(l.Linea, patron) {
+			quedaron++
+		}
+	}
+	if quedaron != previo {
+		t.Errorf("quedaron %d líneas en ERROR, quería %d", quedaron, previo)
+	}
+
+	// La del otro container no se toca: el scope es parte de la regla.
+	ajenas, err := s.BuscarLogs("", "otro-kong", []string{"ERROR"},
+		time.Time{}, base.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ajenas) != 0 {
+		t.Errorf("la regla acotada a supabase-kong tocó al otro container: %+v", ajenas)
+	}
+}
+
+// Una fila anterior a la migración 9 que el backfill todavía no alcanzó NO
+// tiene su fila en log_niveles. El preview la cuenta igual, porque sale de
+// logs. Con un UPDATE pelado no se tocaría, y el número confirmado sería más
+// grande que el aplicado: por eso la aplicación retroactiva es un upsert.
+func TestLaReglaAlcanzaALasFilasSinNivel(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "kong", "ruido de la sonda", "otra cosa")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OlvidarNivelParaTest(1); err != nil {
+		t.Fatal(err)
+	}
+
+	previo, err := s.ContarPorPatron("ruido de la sonda", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, filas, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "ruido de la sonda", Nivel: "TRACE",
+		Motivo: "la fila no tenía nivel", Creada: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filas != previo || filas != 1 {
+		t.Fatalf("preview %d, filas %d, quería 1 y 1", previo, filas)
+	}
+
+	got, err := s.BuscarLogs("", "", []string{"TRACE"}, time.Time{}, base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Linea != "ruido de la sonda" {
+		t.Errorf("got = %+v, quería la línea sin nivel ya en TRACE", got)
 	}
 }

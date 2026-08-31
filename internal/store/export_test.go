@@ -25,3 +25,11 @@ func (s *Store) ReiniciarBackfillParaTest() error {
 		WHERE id = 1`)
 	return err
 }
+
+// OlvidarNivelParaTest borra la fila lateral de una línea, para simular lo que
+// dejó la migración 9: filas viejas sin nivel hasta que el backfill las
+// alcance. En producción eso no se provoca, se hereda.
+func (s *Store) OlvidarNivelParaTest(rowid int64) error {
+	_, err := s.db.Exec(`DELETE FROM log_niveles WHERE rowid = ?`, rowid)
+	return err
+}

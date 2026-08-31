@@ -93,6 +93,23 @@ type LineaLog struct {
 	Nivel     string // TRACE | INFO | WARN | ERROR
 }
 
+// ReglaNivel es una corrección guardada del nivel de una línea: "todo lo que
+// contiene este patrón es TRACE".
+//
+// Nivel y Container son strings por la misma razón que en LineaLog: este
+// paquete no importa nada del proyecto. Quien las aplica es internal/logs.
+//
+// Motivo NO es decorativo y no puede quedar vacío: dentro de tres meses, una
+// regla sin motivo es una regla que nadie se va a animar a borrar.
+type ReglaNivel struct {
+	ID        int64
+	Patron    string
+	Container string // "" = todos
+	Nivel     string // TRACE | INFO | WARN | ERROR
+	Motivo    string
+	Creada    time.Time
+}
+
 // Evento es un hecho puntual: el host se reinició, unos containers volvieron.
 // A diferencia de un Incidente no tiene ventana —no se "cierra"— y por eso
 // vive en su propia tabla y no choca con incidentes_abierto_unico.

@@ -159,6 +159,23 @@ var migraciones = []string{
 	// —/events lo sigue mostrando como historia— pero deja de ocupar la tabla
 	// del panel. Solo se archiva uno cerrado; ver ArchivarIncidente.
 	`ALTER TABLE incidents ADD COLUMN archived_at INTEGER;`,
+
+	// Las reglas de nivel corrigen lo que el clasificador no puede saber: que
+	// el 401 que Kong le devuelve a nuestra propia sonda no es un problema del
+	// sistema. Sin esto, cada container ruidoso nuevo cuesta un commit, un
+	// cross-compile, un deploy y un UPDATE a mano, que es lo que costó el
+	// 31/08/2026, cuando 8625 de los 8625 WARN de 24 h eran esa sonda.
+	//
+	// Se aplican por orden de id y gana la última que matchea: arbitrario,
+	// pero predecible.
+	`CREATE TABLE reglas_nivel (
+		id        INTEGER PRIMARY KEY,
+		patron    TEXT NOT NULL,
+		container TEXT NOT NULL,   -- '' = todos
+		nivel     TEXT NOT NULL,   -- TRACE | INFO | WARN | ERROR
+		motivo    TEXT NOT NULL,
+		creada    INTEGER NOT NULL
+	) STRICT;`,
 }
 
 type Store struct{ db *sql.DB }
@@ -826,6 +843,106 @@ func filtroLogs(q string, args []any, texto, container string, niveles []string)
 		args = append(args, escaparMatch(texto))
 	}
 	return q, args
+}
+
+// consultador es lo que necesitan las lecturas de reglas, para poder correr
+// tanto sobre la base como adentro de una transacción.
+type consultador interface {
+	Query(string, ...any) (*sql.Rows, error)
+}
+
+// ReglasNivel devuelve las reglas guardadas EN ORDEN DE ID, que es el orden en
+// que se aplican. Es la lista que muestra el panel.
+func (s *Store) ReglasNivel() ([]model.ReglaNivel, error) { return leerReglas(s.db) }
+
+func leerReglas(q consultador) ([]model.ReglaNivel, error) {
+	filas, err := q.Query(`SELECT id, patron, container, nivel, motivo, creada
+		FROM reglas_nivel ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+
+	var out []model.ReglaNivel
+	for filas.Next() {
+		var r model.ReglaNivel
+		var creada int64
+		if err := filas.Scan(&r.ID, &r.Patron, &r.Container, &r.Nivel, &r.Motivo, &creada); err != nil {
+			return nil, err
+		}
+		r.Creada = time.Unix(creada, 0).UTC()
+		out = append(out, r)
+	}
+	return out, filas.Err()
+}
+
+// ReglasParaAplicar es lo mismo reducido a lo que hace falta para nivelar una
+// línea. La conversión vive en UN solo lugar a propósito: repetirla en el
+// ingestor y acá es la forma segura de que un día difieran.
+func (s *Store) ReglasParaAplicar() (logs.Reglas, error) {
+	filas, err := s.ReglasNivel()
+	if err != nil {
+		return nil, err
+	}
+	return reglasDe(filas), nil
+}
+
+func reglasDe(filas []model.ReglaNivel) logs.Reglas {
+	out := make(logs.Reglas, 0, len(filas))
+	for _, f := range filas {
+		out = append(out, logs.Regla{Patron: f.Patron, Container: f.Container, Nivel: logs.Nivel(f.Nivel)})
+	}
+	return out
+}
+
+// CrearReglaNivel guarda la regla y la aplica a lo que ya estaba guardado.
+// Devuelve el id y cuántas filas quedaron con el nivel nuevo, que TIENE que ser
+// el mismo número que devolvió ContarPorPatron con el mismo patrón y container.
+//
+// ⚠️ Las dos cosas van en la misma transacción y el UPDATE está medido: 43 679
+// filas en 9,4 s sobre las 925 000 de la base del VPS. El store abre UNA sola
+// conexión a SQLite, así que durante esos 9 segundos el ciclo del minuto no
+// tiene base: el tick de muestreo se atrasa y los logs de ese minuto entran en
+// el siguiente. Es tolerable porque esto lo dispara una persona apretando un
+// botón; no lo sería para algo automático ni para algo por lotes en background.
+func (s *Store) CrearReglaNivel(r model.ReglaNivel) (int64, int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`INSERT INTO reglas_nivel (patron, container, nivel, motivo, creada)
+		VALUES (?,?,?,?,?)`, r.Patron, r.Container, r.Nivel, r.Motivo, r.Creada.Unix())
+	if err != nil {
+		return 0, 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	donde, args := dondeCoincide(r.Patron, r.Container)
+	// INSERT ... ON CONFLICT y no un UPDATE pelado: una fila anterior a la
+	// migración 9 que el backfill todavía no alcanzó no tiene fila en
+	// log_niveles y un UPDATE no la tocaría. El preview la cuenta igual,
+	// porque sale de logs, así que con UPDATE el número confirmado sería más
+	// grande que el aplicado. Acá el upsert la crea.
+	res, err = tx.Exec(`INSERT INTO log_niveles (rowid, nivel)
+		SELECT l.rowid, ? FROM logs l`+donde+`
+		ON CONFLICT(rowid) DO UPDATE SET nivel = excluded.nivel`,
+		append([]any{r.Nivel}, args...)...)
+	if err != nil {
+		return 0, 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return id, int(n), nil
 }
 
 // dondeCoincide es la ÚNICA definición SQL de "esta línea matchea el patrón".
