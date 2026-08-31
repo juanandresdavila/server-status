@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/juanandresdavila/server-status/internal/logs"
 	"github.com/juanandresdavila/server-status/internal/model"
 	"github.com/juanandresdavila/server-status/internal/store"
 )
@@ -1205,5 +1206,70 @@ func TestLogsDesdeRowidNoSalteaCuandoHayMasQueElTope(t *testing.T) {
 
 	if got, quiero := strings.Join(vistas, ","), "a,b,c,d,e"; got != quiero {
 		t.Errorf("vistas = %q, quería %q — el cursor salteó líneas", got, quiero)
+	}
+}
+
+// El corpus es de líneas reales del VPS, con variantes de caja a propósito.
+// Es lo que hace que el test pueda fallar: con LIKE, el patrón "egress-probe"
+// también matchearía "EGRESS-PROBE" y el conteo de SQL se iría por encima del
+// de Go en exactamente una línea.
+var corpusReal = []string{
+	`172.19.0.2 - - [31/Aug/2026:19:50:30 +0000] "GET /auth/v1/health HTTP/1.1" 401 96 "-" "egress-probe"`,
+	`172.19.0.2 - - [31/Aug/2026:19:51:30 +0000] "GET /auth/v1/health HTTP/1.1" 401 96 "-" "egress-probe"`,
+	`172.19.0.2 - - [31/Aug/2026:19:52:30 +0000] "GET /auth/v1/health HTTP/1.1" 200 107 "-" "server-status"`,
+	`172.19.0.2 - - [31/Aug/2026:15:34:35 +0000] "GET /rest/v1/workouts?select=id HTTP/1.1" 401 79 "https://gym-tracker-brown-one.vercel.app/" "Mozilla/5.0"`,
+	`172.19.0.2 - - [31/Aug/2026:15:35:35 +0000] "GET /egress-probe HTTP/1.1" 404 79 "-" "curl/8.7.1"`,
+	`172.19.0.2 - - [31/Aug/2026:15:36:35 +0000] "GET /health HTTP/1.1" 200 79 "-" "EGRESS-PROBE"`,
+	` 2026-08-22 07:38:00.012 UTC [38] ERROR:  relation "x" does not exist`,
+	` 2026-08-22 07:38:01.012 UTC [38] LOG:  cron job 1 completed: 0 rows`,
+	`{"component":"api","level":"info","method":"GET","msg":"400: Unsupported provider","path":"/authorize"}`,
+	"\tselect v.planned_minutes, error from con_subs;",
+}
+
+// El mismo corpus por los dos caminos. Si instr() y strings.Contains difieren
+// en UNA sola línea, este test lo dice.
+func TestGoYSQLCuentanIgual(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "supabase-kong", corpusReal...)); err != nil {
+		t.Fatal(err)
+	}
+	// La misma línea en otro container: sin esto el scope por container no se
+	// ejercita y una regla global pasaría por una acotada.
+	if err := s.InsertLogs(lineas(base, "otro-kong", corpusReal[0])); err != nil {
+		t.Fatal(err)
+	}
+
+	patrones := []string{
+		`"GET /auth/v1/health HTTP/1.1" 401 96 "-" "egress-probe"`,
+		"egress-probe",
+		"EGRESS-PROBE",
+		"ERROR:",
+		"error",
+		"cron job",
+		`"level":"info"`,
+		"no aparece en ninguna línea",
+	}
+	containers := []string{"", "supabase-kong", "otro-kong"}
+	todas := append(append([]model.LineaLog{}, lineas(base, "supabase-kong", corpusReal...)...),
+		lineas(base, "otro-kong", corpusReal[0])...)
+
+	for _, p := range patrones {
+		for _, c := range containers {
+			enSQL, err := s.ContarPorPatron(p, c)
+			if err != nil {
+				t.Fatalf("ContarPorPatron(%q, %q): %v", p, c, err)
+			}
+			r := logs.Regla{Patron: p, Container: c}
+			enGo := 0
+			for _, l := range todas {
+				if r.Coincide(l.Linea, l.Container) {
+					enGo++
+				}
+			}
+			if enSQL != enGo {
+				t.Errorf("patrón %q container %q: SQL contó %d y Go %d", p, c, enSQL, enGo)
+			}
+		}
 	}
 }

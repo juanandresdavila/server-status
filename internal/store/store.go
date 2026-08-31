@@ -828,6 +828,43 @@ func filtroLogs(q string, args []any, texto, container string, niveles []string)
 	return q, args
 }
 
+// dondeCoincide es la ÚNICA definición SQL de "esta línea matchea el patrón".
+// La usan el conteo previo, la aplicación retroactiva y el borrado, así que los
+// tres no pueden diferir ni queriendo.
+//
+// instr() y NUNCA LIKE: LIKE es case-insensitive para ASCII y el equivalente en
+// Go, logs.Regla.Coincide con strings.Contains, no lo es. Con LIKE, el número
+// que el usuario confirma en el preview no es el que le queda aplicado.
+// TestGoYSQLCuentanIgual corre los dos caminos sobre el mismo corpus.
+//
+// Sin regex: además de invitar a patrones catastróficos, la semántica de
+// SQLite y la de Go no coinciden y no hay test que pueda cerrar ese abismo.
+func dondeCoincide(patron, container string) (string, []any) {
+	q := ` WHERE instr(l.linea, ?) > 0`
+	args := []any{patron}
+	if container != "" {
+		q += ` AND l.container = ?`
+		args = append(args, container)
+	}
+	return q, args
+}
+
+// ContarPorPatron dice cuántas líneas guardadas matchean. Es el número que el
+// preview muestra antes de confirmar, y TIENE que ser el mismo que devuelve
+// CrearReglaNivel: es la afirmación central de toda esta función.
+//
+// ⚠️ Es un scan completo: en la tabla FTS5 `logs`, ts y container son
+// UNINDEXED. Sobre las 925 000 filas de la base del VPS eso son segundos, y el
+// store abre UNA sola conexión, así que mientras dura el ciclo del minuto
+// espera. Es tolerable porque lo dispara una persona apretando un botón; no lo
+// sería para algo automático.
+func (s *Store) ContarPorPatron(patron, container string) (int, error) {
+	donde, args := dondeCoincide(patron, container)
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM logs l`+donde, args...).Scan(&n)
+	return n, err
+}
+
 // consultarLogs escanea las filas y devuelve de paso el rowid más alto que vio.
 func (s *Store) consultarLogs(q string, args []any) ([]model.LineaLog, int64, error) {
 	filas, err := s.db.Query(q, args...)
