@@ -27,6 +27,13 @@
   .n-INFO  { opacity: .55; }
   .n-WARN  { color: var(--warn); }
   .n-ERROR { color: var(--err); }
+  /* La celda del nivel ES el control: click en el nivel para cambiarlo. Así no
+     hace falta una columna más ni una línea de JS. Las líneas que pega el modo
+     en vivo no lo traen hasta la próxima recarga, que es el precio de no tocar
+     el JS. */
+  a.n { text-decoration: none; }
+  a.n:hover { text-decoration: underline; }
+  .reglas { font-size: .8rem; margin-left: .75rem; opacity: .7; vertical-align: middle; }
   .lv-TRACE .m { opacity: .5; }
   .lv-WARN  .m { color: var(--warn); }
   .lv-ERROR .m { color: var(--err); }
@@ -67,7 +74,7 @@
 
 {{/* Solo con ventana relativa. Con desde/hasta explícitos uno está mirando el
      pasado, y pegar líneas nuevas arriba mentiría sobre la ventana pedida. */}}
-<h1>logs{{ if .EnVivo }}<label class="vivo"><input type="checkbox" id="vivo"><span class="punto"></span>{{ t "en-vivo-toggle" }}</label>{{ end }}</h1>
+<h1>logs{{ if .EnVivo }}<label class="vivo"><input type="checkbox" id="vivo"><span class="punto"></span>{{ t "en-vivo-toggle" }}</label>{{ end }}{{ with .Reglas }} <a class="reglas" href="/logs/reglas">{{ . }}</a>{{ end }}</h1>
 
 <form method="get">
   <input name="q" value="{{ .Q }}" placeholder="{{ t "buscar-ph" }}" autofocus>
@@ -120,7 +127,7 @@
 
 <pre>
 {{- range .Lineas }}
-<div class="l lv-{{ .Nivel }}"><span class="t">{{ (en .TS $.Zona).Format "02/01/2006 15:04:05" }}</span><span class="n n-{{ .Nivel }}">{{ .Nivel }}</span><span class="c">{{ .Container }}</span><span class="m">{{ .Linea }}</span></div>
+<div class="l lv-{{ .Nivel }}"><span class="t">{{ (en .TS $.Zona).Format "02/01/2006 15:04:05" }}</span><a class="n n-{{ .Nivel }}" title="{{ t "cambiar-nivel" }}" href="/logs/reglas/nueva?rowid={{ .Rowid }}&amp;volver={{ $.Volver }}">{{ .Nivel }}</a><span class="c">{{ .Container }}</span><span class="m">{{ .Linea }}</span></div>
 {{- else }}
 <div class="vacio">{{ t "sin-resultados" }}</div>
 {{- end }}

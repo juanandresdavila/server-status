@@ -40,6 +40,16 @@ type Datos interface {
 	// si el sujeto sigue mal el motor lo reabre en el próximo tick.
 	CerrarIncidente(id int64, cuando time.Time) error
 	ArchivarIncidente(id int64, cuando time.Time) error
+	// Las reglas de nivel: la lista, el conteo previo, crear y borrar. El
+	// conteo y el efecto salen de la MISMA definición de coincidencia en el
+	// store, que es lo que hace que el número que se confirma sea el que
+	// queda.
+	ReglasNivel() ([]model.ReglaNivel, error)
+	ContarPorPatron(patron, container string) (int, error)
+	CrearReglaNivel(r model.ReglaNivel) (int64, int, error)
+	BorrarReglaNivel(id int64) (int, error)
+	// La línea que el usuario tocó en /logs, para prellenar la regla.
+	LineaPorRowid(rowid int64) (model.LineaLog, bool, error)
 }
 
 // plantillasCon parsea el set completo con t cerrada sobre un idioma: las
@@ -59,7 +69,8 @@ func plantillasCon(idioma string) *template.Template {
 		"t":    func(clave string) string { return tr(idioma, clave) },
 		"lang": func() string { return idioma },
 	}).ParseFS(plantillas, "plantillas/nav.html", "plantillas/panel.html",
-		"plantillas/logs.html", "plantillas/tail.html", "plantillas/eventos.html"))
+		"plantillas/logs.html", "plantillas/tail.html", "plantillas/eventos.html",
+		"plantillas/regla-nueva.html", "plantillas/reglas.html"))
 }
 
 var plantillasIdioma = map[string]*template.Template{
@@ -270,6 +281,15 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 			}
 		}
 
+		// Un error leyendo las reglas no puede tumbar el visor de logs, que es
+		// justo lo que uno abre cuando algo se rompió.
+		aviso := ""
+		if rs, err := d.ReglasNivel(); err != nil {
+			slog.Error("no se pudieron leer las reglas de nivel", "err", err)
+		} else if len(rs) > 0 {
+			aviso = fmt.Sprintf(tr(idioma, "reglas-activas"), len(rs))
+		}
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		errPlantilla := plantillasIdioma[idioma].ExecuteTemplate(w, "logs.html", struct {
 			Nav          nav
@@ -289,6 +309,11 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 			// está prendido: con desde/hasta explícitos uno mira el pasado, y
 			// pegar líneas nuevas arriba mentiría sobre la ventana que pidió.
 			EnVivo bool
+			// Reglas es cuántas hay puestas, para avisarlo en el encabezado:
+			// un filtro que uno se olvidó que puso es peor que no tener
+			// filtro. Volver es a dónde vuelve la creación de una regla.
+			Reglas string
+			Volver string
 		}{
 			Nav:  armarNav("logs", v.Horas, q.Get("container")),
 			Zona: zona,
@@ -296,6 +321,7 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 			Horas: v.Horas, Ventana: v, Truncado: truncado,
 			Containers: nombres, Lineas: lineas, Niveles: togglesDe(niveles), Rangos: rangos,
 			Limite: limite, Topes: topesVista, Cursor: cursor, EnVivo: !v.Explicita,
+			Reglas: aviso, Volver: rutaPropia(r.URL.RequestURI()),
 		})
 		if errPlantilla != nil {
 			// El cuerpo ya se empezó a escribir, así que no se puede devolver un
@@ -428,6 +454,144 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 			http.Redirect(w, r, rutaPropia(r.FormValue("volver")), http.StatusSeeOther)
 		}
 	}
+	mux.HandleFunc("GET /logs/reglas", func(w http.ResponseWriter, r *http.Request) {
+		idioma := idiomaDe(w, r)
+		rs, err := d.ReglasNivel()
+		if err != nil {
+			http.Error(w, "no se pudieron leer las reglas", http.StatusInternalServerError)
+			return
+		}
+
+		v := vistaReglas{
+			Nav: armarNav("logs", horasDe(r), ""), Zona: zona,
+			Volver: rutaPropia(r.URL.RequestURI()),
+		}
+		for _, regla := range rs {
+			// Una consulta por regla, y cada una es un scan completo de la tabla
+			// FTS5. Son unas pocas reglas y esta página se abre a mano: no vale la
+			// pena una consulta agrupada que igual tendría que evaluar instr() por
+			// fila y por regla.
+			n, err := d.ContarPorPatron(regla.Patron, regla.Container)
+			if err != nil {
+				// Sin el conteo la fila igual sirve para borrar la regla, que es
+				// lo urgente. Tirar la página entera abajo por esto sería peor.
+				slog.Error("no se pudieron contar las coincidencias de la regla",
+					"id", regla.ID, "err", err)
+			}
+			v.Reglas = append(v.Reglas, filaRegla{ReglaNivel: regla, Coincidencias: n})
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := plantillasIdioma[idioma].ExecuteTemplate(w, "reglas.html", v); err != nil {
+			slog.Error("no se pudo renderizar la lista de reglas", "err", err)
+		}
+	})
+
+	mux.HandleFunc("POST /logs/reglas/{id}/borrar", func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			http.Error(w, "id inválido", http.StatusBadRequest)
+			return
+		}
+		// Devuelve las filas afectadas a Clasificar más las reglas que quedan: el
+		// undo es exacto. Y puede tardar segundos, igual que crear.
+		filas, err := d.BorrarReglaNivel(id)
+		if err != nil {
+			slog.Error("no se pudo borrar la regla de nivel", "id", id, "err", err)
+			http.Error(w, "no se pudo borrar la regla", http.StatusInternalServerError)
+			return
+		}
+		slog.Info("regla de nivel borrada", "id", id, "filas", filas)
+		http.Redirect(w, r, rutaPropia(r.FormValue("volver")), http.StatusSeeOther)
+	})
+
+	mux.HandleFunc("GET /logs/reglas/nueva", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		idioma := idiomaDe(w, r)
+		v := vistaRegla{
+			Niveles: nivelesConocidos,
+			Volver:  rutaPropia(q.Get("volver")),
+			// TRACE por default: silenciar ruido es el caso que motivó todo esto.
+			// Subir a ERROR sigue estando a un click.
+			Nivel: string(logs.Trace),
+		}
+
+		if q.Has("patron") {
+			// Segunda vuelta: recalcular es re-submitear este mismo GET, así que
+			// el conteo tiene que salir de lo que el usuario editó y no de lo que
+			// se sugirió al abrir.
+			v.Patron, v.Container = q.Get("patron"), q.Get("container")
+			v.Motivo, v.Linea, v.Actual = q.Get("motivo"), q.Get("linea"), q.Get("actual")
+			if esNivel(q.Get("nivel")) {
+				v.Nivel = q.Get("nivel")
+			}
+		} else {
+			rowid, err := strconv.ParseInt(q.Get("rowid"), 10, 64)
+			if err != nil {
+				http.Error(w, "rowid inválido", http.StatusBadRequest)
+				return
+			}
+			l, hay, err := d.LineaPorRowid(rowid)
+			if err != nil {
+				http.Error(w, "no se pudo leer la línea", http.StatusInternalServerError)
+				return
+			}
+			// La retención pudo llevarse la línea entre que se pintó la vista y se
+			// hizo click. Es un 404 y no un 500: no se rompió nada.
+			if !hay {
+				http.Error(w, "esa línea ya no está guardada", http.StatusNotFound)
+				return
+			}
+			v.Linea, v.Container, v.Actual = l.Linea, l.Container, l.Nivel
+			v.Patron = logs.PatronSugerido(l.Linea)
+		}
+		v.Nav = armarNav("logs", horasDe(r), v.Container)
+
+		if strings.TrimSpace(v.Patron) != "" {
+			n, err := d.ContarPorPatron(v.Patron, v.Container)
+			if err != nil {
+				http.Error(w, "no se pudieron contar las coincidencias", http.StatusInternalServerError)
+				return
+			}
+			v.Afectadas, v.HayConteo = n, true
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := plantillasIdioma[idioma].ExecuteTemplate(w, "regla-nueva.html", v); err != nil {
+			slog.Error("no se pudo renderizar la regla nueva", "err", err)
+		}
+	})
+
+	mux.HandleFunc("POST /logs/reglas", func(w http.ResponseWriter, r *http.Request) {
+		patron := r.FormValue("patron")
+		nivel := r.FormValue("nivel")
+		// El motivo NO es decorativo: dentro de tres meses, una regla sin motivo
+		// es una regla que nadie se anima a borrar. Por eso es obligatorio.
+		motivo := strings.TrimSpace(r.FormValue("motivo"))
+		if strings.TrimSpace(patron) == "" || motivo == "" || !esNivel(nivel) {
+			http.Error(w, "la regla necesita patrón, nivel y motivo", http.StatusBadRequest)
+			return
+		}
+
+		// ⚠️ Esto puede tardar segundos: aplica la regla a todo lo guardado sobre
+		// la única conexión a SQLite. Ver CrearReglaNivel en el store.
+		id, filas, err := d.CrearReglaNivel(model.ReglaNivel{
+			Patron: patron, Container: r.FormValue("container"), Nivel: nivel,
+			Motivo: motivo, Creada: time.Now(),
+		})
+		if err != nil {
+			slog.Error("no se pudo crear la regla de nivel", "patron", patron, "err", err)
+			http.Error(w, "no se pudo crear la regla", http.StatusInternalServerError)
+			return
+		}
+		// Queda en el journal cuántas filas cambió: es el número que el usuario
+		// confirmó, y el único rastro de una acción que reescribe datos guardados.
+		slog.Info("regla de nivel creada", "id", id, "patron", patron,
+			"container", r.FormValue("container"), "nivel", nivel, "filas", filas)
+
+		http.Redirect(w, r, rutaPropia(r.FormValue("volver")), http.StatusSeeOther)
+	})
+
 	mux.HandleFunc("POST /incidents/{id}/resolve", accion("resolver", d.CerrarIncidente))
 	mux.HandleFunc("POST /incidents/{id}/archive", accion("archivar", d.ArchivarIncidente))
 
@@ -630,6 +794,54 @@ func (v Ventana) ValorHasta() string {
 	return v.en(v.Hasta).Format(formLocal)
 }
 
+// filaRegla es una regla con lo que matchea HOY. El conteo del día que se creó
+// no sirve para decidir si borrarla: lo que importa es si creció.
+type filaRegla struct {
+	model.ReglaNivel
+	Coincidencias int
+}
+
+type vistaReglas struct {
+	Nav    nav
+	Zona   *time.Location
+	Reglas []filaRegla
+	Volver string
+}
+
+// vistaRegla es el form de una regla nueva con su conteo previo.
+type vistaRegla struct {
+	Nav       nav
+	Linea     string // la línea que la originó, como contexto
+	Actual    string // el nivel que tiene hoy esa línea
+	Patron    string
+	Container string
+	Nivel     string
+	Motivo    string
+	Afectadas int
+	HayConteo bool
+	Volver    string
+	// Niveles son las cuatro opciones del <select>. Salen de
+	// nivelesConocidos, la misma lista que valida el POST: si la vista
+	// ofreciera una que la validación rechaza, el form sería una trampa.
+	Niveles []string
+}
+
+// nivelesConocidos es la lista canónica: los pills del filtro y la validación
+// del form salen de acá, para que no puedan divergir.
+var nivelesConocidos = []string{"TRACE", "INFO", "WARN", "ERROR"}
+
+// esNivel valida lo que llega del form. NivelValido de logs no sirve acá: cae
+// a INFO ante cualquier basura, que es lo correcto para un filtro de la vista
+// y lo contrario de lo que hace falta para guardar una regla.
+func esNivel(s string) bool {
+	for _, n := range nivelesConocidos {
+		if s == n {
+			return true
+		}
+	}
+	return false
+}
+
 // toggleNivel es un pill del filtro: el nivel y si está prendido.
 type toggleNivel struct {
 	Valor  string
@@ -643,8 +855,8 @@ func togglesDe(elegidos []string) []toggleNivel {
 	for _, n := range elegidos {
 		activo[n] = true
 	}
-	out := make([]toggleNivel, 0, 4)
-	for _, n := range []string{"TRACE", "INFO", "WARN", "ERROR"} {
+	out := make([]toggleNivel, 0, len(nivelesConocidos))
+	for _, n := range nivelesConocidos {
 		out = append(out, toggleNivel{Valor: n, Activo: activo[n]})
 	}
 	return out

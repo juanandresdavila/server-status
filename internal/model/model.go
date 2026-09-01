@@ -91,6 +91,28 @@ type LineaLog struct {
 	Stream    string // stdout | stderr
 	Linea     string
 	Nivel     string // TRACE | INFO | WARN | ERROR
+
+	// Rowid es el de la tabla FTS5, y es lo que identifica una línea guardada.
+	// Vale 0 en una línea que todavía no se insertó. El panel lo usa para
+	// linkear "hacer una regla de nivel con esta línea".
+	Rowid int64
+}
+
+// ReglaNivel es una corrección guardada del nivel de una línea: "todo lo que
+// contiene este patrón es TRACE".
+//
+// Nivel y Container son strings por la misma razón que en LineaLog: este
+// paquete no importa nada del proyecto. Quien las aplica es internal/logs.
+//
+// Motivo NO es decorativo y no puede quedar vacío: dentro de tres meses, una
+// regla sin motivo es una regla que nadie se va a animar a borrar.
+type ReglaNivel struct {
+	ID        int64
+	Patron    string
+	Container string // "" = todos
+	Nivel     string // TRACE | INFO | WARN | ERROR
+	Motivo    string
+	Creada    time.Time
 }
 
 // Evento es un hecho puntual: el host se reinició, unos containers volvieron.

@@ -368,7 +368,21 @@ func correr(cfg config.Config, col *host.Collector) error {
 			if err != nil {
 				slog.Error("falló el motor de reglas sobre el host", "err", err)
 			}
-			ingerirLogs(ctx, cli, s, cs)
+			// Las reglas de nivel se releen UNA VEZ POR TICK. Sin mutex, sin
+			// atomic.Pointer y sin invalidación desde el handler web: la
+			// desactualización máxima es de un minuto, y una regla recién
+			// creada ya quedó aplicada sobre todo lo guardado por
+			// CrearReglaNivel. Nada de eso justifica una primitiva de
+			// concurrencia ni un camino de invalidación que después hay que
+			// testear.
+			//
+			// Un error leyéndolas no puede frenar la ingesta: se sigue con el
+			// conjunto vacío, que es exactamente el comportamiento anterior.
+			reglas, err := s.ReglasParaAplicar()
+			if err != nil {
+				slog.Error("no se pudieron leer las reglas de nivel", "err", err)
+			}
+			ingerirLogs(ctx, cli, s, cs, reglas)
 
 			conteos := map[string]rules.ConteoLog{}
 			if cfg.LogsPatron != "" {
@@ -483,8 +497,15 @@ func correr(cfg config.Config, col *host.Collector) error {
 func backfillDeNiveles(ctx context.Context, s *store.Store) {
 	const lote = 2000
 
-	clasificar := func(linea, stream string) string {
-		return string(logs.Clasificar(linea, stream))
+	// Las reglas se leen UNA vez, al empezar la pasada: si no se aplicaran, el
+	// backfill le pisaría el nivel a las filas viejas que una regla ya había
+	// corregido, y el ruido volvería sin que nadie tocara nada.
+	reglas, err := s.ReglasParaAplicar()
+	if err != nil {
+		slog.Error("no se pudieron leer las reglas de nivel para el backfill", "err", err)
+	}
+	nivelar := func(linea, stream, container string) string {
+		return string(logs.Nivelar(reglas, linea, stream, container))
 	}
 
 	var total int
@@ -495,7 +516,7 @@ func backfillDeNiveles(ctx context.Context, s *store.Store) {
 		case <-time.After(2 * time.Second):
 		}
 
-		n, listo, err := s.BackfillNiveles(clasificar, lote)
+		n, listo, err := s.BackfillNiveles(nivelar, lote)
 		if err != nil {
 			slog.Error("no se pudo clasificar el lote de logs viejos", "err", err)
 			return
@@ -557,7 +578,7 @@ func escribirPortada(s *store.Store, destino string) error {
 // Un container sin cursor arranca desde AHORA y no desde su historia: traer
 // los días que Docker conserve en el primer tick sería un pico inútil.
 // Es la invariante 10 del spec de la fase 8.
-func ingerirLogs(ctx context.Context, cli *docker.Client, s *store.Store, cs []docker.Container) {
+func ingerirLogs(ctx context.Context, cli *docker.Client, s *store.Store, cs []docker.Container, reglas logs.Reglas) {
 	ahora := clock.Real{}.Now()
 
 	for _, c := range cs {
@@ -587,7 +608,7 @@ func ingerirLogs(ctx context.Context, cli *docker.Client, s *store.Store, cs []d
 			continue
 		}
 
-		ms, ultima := nuevasLineas(lineas, desde, c.Name)
+		ms, ultima := nuevasLineas(lineas, desde, c.Name, reglas)
 		if len(ms) == 0 {
 			continue
 		}
@@ -652,7 +673,12 @@ func (s *seguidorDocker) Seguir(ctx context.Context, nombre string, out chan<- m
 //
 // Docker igual filtra `since` con resolución de segundo, así que la última
 // tanda vuelve a llegar: este filtro es el que la descarta.
-func nuevasLineas(crudas []docker.LineaLog, desde time.Time, container string) ([]model.LineaLog, time.Time) {
+//
+// El nivel sale de logs.Nivelar: lo que dice el clasificador, corregido por las
+// reglas que el usuario haya puesto desde el panel. Las reglas llegan por
+// parámetro y no se leen acá adentro, para que esta función siga siendo pura y
+// testeable sin base.
+func nuevasLineas(crudas []docker.LineaLog, desde time.Time, container string, reglas logs.Reglas) ([]model.LineaLog, time.Time) {
 	out := make([]model.LineaLog, 0, len(crudas))
 	ultima := desde
 	for _, l := range crudas {
@@ -661,7 +687,7 @@ func nuevasLineas(crudas []docker.LineaLog, desde time.Time, container string) (
 		}
 		out = append(out, model.LineaLog{
 			TS: l.TS, Container: container, Stream: l.Stream, Linea: l.Linea,
-			Nivel: string(logs.Clasificar(l.Linea, l.Stream)),
+			Nivel: string(logs.Nivelar(reglas, l.Linea, l.Stream, container)),
 		})
 		if l.TS.After(ultima) {
 			ultima = l.TS

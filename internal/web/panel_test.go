@@ -118,8 +118,33 @@ func (datosFalsos) BuscarLogs(texto, container string, niveles []string, desde, 
 	return []model.LineaLog{{
 		TS:        time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
 		Container: "comm-tool", Stream: "stderr", Linea: "ERROR conexion rechazada",
-		Nivel: "ERROR",
+		Nivel: "ERROR", Rowid: 99,
 	}}, nil
+}
+
+func (datosFalsos) ReglasNivel() ([]model.ReglaNivel, error) {
+	return []model.ReglaNivel{{
+		ID: 3, Patron: `"-" "egress-probe"`, Container: "supabase-kong", Nivel: "TRACE",
+		Motivo: "es nuestra propia sonda, no un problema del sistema",
+		Creada: time.Date(2026, 8, 31, 20, 15, 0, 0, time.UTC),
+	}}, nil
+}
+
+func (datosFalsos) ContarPorPatron(patron, container string) (int, error) { return 42, nil }
+
+func (datosFalsos) CrearReglaNivel(r model.ReglaNivel) (int64, int, error) { return 7, 42, nil }
+
+func (datosFalsos) BorrarReglaNivel(id int64) (int, error) { return 42, nil }
+
+func (datosFalsos) LineaPorRowid(rowid int64) (model.LineaLog, bool, error) {
+	if rowid != 99 {
+		return model.LineaLog{}, false, nil
+	}
+	return model.LineaLog{
+		TS:        time.Date(2026, 8, 31, 19, 50, 30, 0, time.UTC),
+		Container: "supabase-kong", Stream: "stdout", Nivel: "WARN", Rowid: 99,
+		Linea: `172.19.0.2 - - [31/Aug/2026:19:50:30 +0000] "GET /auth/v1/health HTTP/1.1" 401 96 "-" "egress-probe"`,
+	}, true, nil
 }
 
 func (datosFalsos) EventosEntre(desde, hasta time.Time, limite int) ([]model.Evento, error) {
@@ -974,5 +999,218 @@ func TestElNavOfreceLosEnlacesExternos(t *testing.T) {
 	// no la palabra: "externo" aparece igual en el CSS del nav, que va siempre.
 	if strings.Contains(pedir(t, "/").Body.String(), `class="externo"`) {
 		t.Error("sin enlaces en la config el nav no puede mostrar ninguno")
+	}
+}
+
+// espiaReglas registra lo que le piden, que es lo único que estos tests pueden
+// verificar sin base.
+type espiaReglas struct {
+	datosFalsos
+	pedidoPatron, pedidoContainer string
+	creada                        model.ReglaNivel
+	borrada                       int64
+}
+
+func (e *espiaReglas) ContarPorPatron(patron, container string) (int, error) {
+	e.pedidoPatron, e.pedidoContainer = patron, container
+	return 42, nil
+}
+
+func (e *espiaReglas) CrearReglaNivel(r model.ReglaNivel) (int64, int, error) {
+	e.creada = r
+	return 7, 42, nil
+}
+
+func (e *espiaReglas) BorrarReglaNivel(id int64) (int, error) {
+	e.borrada = id
+	return 42, nil
+}
+
+// La página se abre desde una línea concreta: el patrón viene sugerido, el
+// container viene puesto, y el número de líneas afectadas se ve ANTES de
+// confirmar. Ese número es toda la función: sin él, una regla es un salto al
+// vacío sobre datos guardados.
+func TestLaPaginaDeReglaNuevaSePrellenaDesdeLaLinea(t *testing.T) {
+	e := &espiaReglas{}
+	rec := httptest.NewRecorder()
+	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec,
+		httptest.NewRequest("GET", "/logs/reglas/nueva?rowid=99&volver=%2Flogs%3Fhoras%3D6", nil))
+
+	if rec.Code != 200 {
+		t.Fatalf("código = %d, quería 200", rec.Code)
+	}
+	cuerpo := rec.Body.String()
+	// El patrón sugerido es el de PatronSugerido, ya sin la IP ni la fecha.
+	if !strings.Contains(cuerpo, `&#34;GET /auth/v1/health HTTP/1.1&#34; 401 96 &#34;-&#34; &#34;egress-probe&#34;`) {
+		t.Error("el patrón no viene sugerido en el form")
+	}
+	if !strings.Contains(cuerpo, "42") {
+		t.Error("no se muestra cuántas líneas afecta")
+	}
+	if !strings.Contains(cuerpo, `value="/logs?horas=6"`) {
+		t.Error("se perdió el volver")
+	}
+	if e.pedidoContainer != "supabase-kong" {
+		t.Errorf("contó sobre el container %q, quería supabase-kong", e.pedidoContainer)
+	}
+}
+
+// Recalcular es re-submitear el mismo GET: el conteo se hace sobre lo que el
+// usuario editó, no sobre lo que se sugirió al abrir.
+func TestRecalcularUsaElPatronEditado(t *testing.T) {
+	e := &espiaReglas{}
+	rec := httptest.NewRecorder()
+	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec,
+		httptest.NewRequest("GET", "/logs/reglas/nueva?patron=egress-probe&container=&nivel=TRACE&motivo=x", nil))
+
+	if rec.Code != 200 {
+		t.Fatalf("código = %d, quería 200", rec.Code)
+	}
+	if e.pedidoPatron != "egress-probe" || e.pedidoContainer != "" {
+		t.Errorf("contó %q/%q, quería egress-probe en todos los containers", e.pedidoPatron, e.pedidoContainer)
+	}
+}
+
+// Una línea que la retención ya se llevó no es un 500 ni una página a medias.
+func TestReglaNuevaConUnaLineaQueYaNoEsta(t *testing.T) {
+	rec := httptest.NewRecorder()
+	web.NuevoPanel(datosFalsos{}, zonaDePrueba).ServeHTTP(rec,
+		httptest.NewRequest("GET", "/logs/reglas/nueva?rowid=12345", nil))
+	if rec.Code != 404 {
+		t.Errorf("código = %d, quería 404", rec.Code)
+	}
+}
+
+func TestCrearUnaReglaYVolver(t *testing.T) {
+	e := &espiaReglas{}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/logs/reglas", strings.NewReader(
+		"patron=egress-probe&container=supabase-kong&nivel=TRACE&motivo=sonda+propia&volver=%2Flogs%3Fhoras%3D6"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("código = %d, quería 303", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/logs?horas=6" {
+		t.Errorf("Location = %q, quería /logs?horas=6", loc)
+	}
+	if e.creada.Patron != "egress-probe" || e.creada.Container != "supabase-kong" ||
+		e.creada.Nivel != "TRACE" || e.creada.Motivo != "sonda propia" {
+		t.Errorf("se creó %+v", e.creada)
+	}
+	if e.creada.Creada.IsZero() {
+		t.Error("la regla se guardó sin fecha de creación")
+	}
+}
+
+// Las tres validaciones. El motivo es obligatorio a propósito: una regla sin
+// motivo es una regla que dentro de tres meses nadie se anima a borrar.
+func TestUnaReglaIncompletaNoSeCrea(t *testing.T) {
+	casos := []struct{ nombre, cuerpo string }{
+		{"sin patrón", "patron=&nivel=TRACE&motivo=algo"},
+		{"patrón de puros espacios", "patron=+++&nivel=TRACE&motivo=algo"},
+		{"sin motivo", "patron=x&nivel=TRACE&motivo="},
+		{"nivel inventado", "patron=x&nivel=SILENCIO&motivo=algo"},
+	}
+	for _, c := range casos {
+		e := &espiaReglas{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/logs/reglas", strings.NewReader(c.cuerpo))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: código = %d, quería 400", c.nombre, rec.Code)
+		}
+		if e.creada.Patron != "" {
+			t.Errorf("%s: se creó igual: %+v", c.nombre, e.creada)
+		}
+	}
+}
+
+// La lista es donde se ve una regla que creció en silencio: cuántas líneas
+// matchea HOY, no cuántas matcheaba el día que se creó.
+func TestLaListaDeReglasMuestraTodoLoQueHaceFaltaParaBorrarla(t *testing.T) {
+	cuerpo := pedir(t, "/logs/reglas").Body.String()
+
+	for _, quiero := range []string{
+		"es nuestra propia sonda",        // el motivo
+		"supabase-kong",                  // el scope
+		"TRACE",                          // el nivel que impone
+		"31/08/2026",                     // cuándo se creó, en fecha completa
+		"42",                             // cuántas líneas matchea hoy
+		`action="/logs/reglas/3/borrar"`, // y cómo deshacerla
+	} {
+		if !strings.Contains(cuerpo, quiero) {
+			t.Errorf("la lista no muestra %q", quiero)
+		}
+	}
+}
+
+func TestBorrarUnaReglaDesdeElPanel(t *testing.T) {
+	e := &espiaReglas{}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/logs/reglas/3/borrar",
+		strings.NewReader("volver=%2Flogs%2Freglas"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther || e.borrada != 3 {
+		t.Fatalf("código=%d borrada=%d, quería 303 y 3", rec.Code, e.borrada)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/logs/reglas" {
+		t.Errorf("Location = %q, quería /logs/reglas", loc)
+	}
+
+	// Un destino de afuera no se sigue: el panel es privado, pero un open
+	// redirect privado sigue siendo un open redirect.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("POST", "/logs/reglas/3/borrar",
+		strings.NewReader("volver=%2F%2Fjadd.com.ar%2Frobo"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec, req)
+	if loc := rec.Header().Get("Location"); loc != "/" {
+		t.Errorf("Location = %q, quería /", loc)
+	}
+
+	// Un id que no es número es un 400, no un panic.
+	rec = httptest.NewRecorder()
+	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec,
+		httptest.NewRequest("POST", "/logs/reglas/basura/borrar", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("id inválido: código = %d, quería 400", rec.Code)
+	}
+}
+
+// Un filtro que te olvidaste que pusiste es peor que no tener filtro.
+func TestElEncabezadoDeLogsAvisaDeLasReglas(t *testing.T) {
+	cuerpo := pedir(t, "/logs").Body.String()
+	if !strings.Contains(cuerpo, "reglas activas: 1") {
+		t.Error("el encabezado de /logs no dice cuántas reglas hay puestas")
+	}
+	if !strings.Contains(cuerpo, `href="/logs/reglas"`) {
+		t.Error("el aviso no linkea a la lista")
+	}
+}
+
+// El control es la celda del nivel: click en el nivel para cambiar el nivel.
+// Así no hace falta una columna nueva ni una línea de JS.
+func TestCadaLineaOfreceHacerUnaRegla(t *testing.T) {
+	cuerpo := pedir(t, "/logs?horas=6").Body.String()
+	if !strings.Contains(cuerpo, "/logs/reglas/nueva?rowid=99") {
+		t.Error("la fila no linkea a crear una regla con esa línea")
+	}
+	if !strings.Contains(cuerpo, "volver=") {
+		t.Error("el link no lleva a dónde volver")
+	}
+}
+
+func TestLosTextosDeReglasEstanEnLosDosIdiomas(t *testing.T) {
+	if cuerpo := pedir(t, "/logs/reglas?lang=en").Body.String(); !strings.Contains(cuerpo, "lines today") {
+		t.Error("la lista de reglas no se traduce")
+	}
+	if cuerpo := pedir(t, "/logs?lang=en").Body.String(); !strings.Contains(cuerpo, "active rules: 1") {
+		t.Error("el aviso del encabezado no se traduce")
 	}
 }

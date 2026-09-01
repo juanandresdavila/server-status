@@ -93,6 +93,40 @@ no estaba en la config.
   también en la portada pública** — la lista blanca de la invariante 4 filtra
   campos (`ServicioPublico`), no servicios.
 
+**Tanda del 31/08/2026: reglas de nivel desde una línea.** Plan en
+`docs/superpowers/plans/2026-08-31-reglas-de-nivel.md`, diseño en
+`docs/superpowers/specs/2026-08-31-reglas-de-nivel-design.md`. Nace de que el
+99,5 % de los WARN de 24 h eran el 401 que Kong le devuelve a nuestra propia
+sonda `egress-probe`: se arregló en el clasificador, y ese arreglo costó un
+commit, un cross-compile, un deploy y un UPDATE a mano. Esto es para no volver
+a pagarlo con el próximo container ruidoso.
+
+- **`reglas_nivel` (migración 12)**: patrón, container opcional, nivel, motivo.
+  Se aplican por orden de `id` y **gana la última que matchea**.
+- **`logs.Clasificar` sigue siendo pura.** Las reglas son un tipo aparte
+  (`logs.Reglas`) que se compone encima con `logs.Nivelar`, y esa composición
+  es la ÚNICA forma en que se calcula el nivel guardado: la usan la ingesta, el
+  backfill y el borrado de una regla.
+- 🚨 **Una sola definición de "coincide"**: `strings.Contains` en Go e
+  `instr()` en SQL, nunca `LIKE`, que es case-insensitive para ASCII mientras
+  Go no lo es, y sin regex. `TestGoYSQLCuentanIgual` corre los dos caminos
+  sobre el mismo corpus. Si divergieran, el número que uno confirma en el
+  preview no sería el que le queda.
+- **La aplicación retroactiva es un upsert y no un UPDATE**: una fila anterior
+  a la migración 9 que el backfill no alcanzó no tiene fila en `log_niveles`, y
+  un UPDATE la dejaría afuera aunque el preview la haya contado.
+- ⚠️ **Crear o borrar una regla le saca la base al ciclo del minuto**: 43 679
+  filas en 9,4 s medidos sobre la base del VPS, y el store abre UNA sola
+  conexión. Es tolerable porque lo dispara una persona; no lo sería
+  automatizado.
+- **Las reglas se releen una vez por tick.** Sin mutex ni invalidación: la
+  desactualización máxima es de un minuto, y la regla recién creada ya quedó
+  aplicada sobre lo guardado.
+- **Nada de esto toca los avisos.** Los niveles alimentan `/logs` y, solo los
+  ERROR, la línea de tiempo de `/events`. Una regla mal puesta puede esconderte
+  algo del visor; no puede callarte un aviso de Telegram. Ese límite es lo que
+  hace que la función sea tolerable.
+
 **Medición de egress IPv4 vs IPv6 (26/08/2026) — EN CURSO.** El 26/08 los
 probes salientes saltaron a **23 resets** contra una base de **0,31/día**.
 Todas las fallas de red del histórico son por IPv6, pero eso no prueba nada: el

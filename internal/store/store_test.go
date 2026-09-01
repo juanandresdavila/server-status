@@ -2,11 +2,13 @@ package store_test
 
 import (
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/juanandresdavila/server-status/internal/logs"
 	"github.com/juanandresdavila/server-status/internal/model"
 	"github.com/juanandresdavila/server-status/internal/store"
 )
@@ -69,8 +71,8 @@ func TestUltimaMigracionAplicada(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 11 {
-		t.Errorf("versión = %d, quería 11", v)
+	if v != 12 {
+		t.Errorf("versión = %d, quería 12", v)
 	}
 }
 
@@ -633,6 +635,19 @@ func lineas(base time.Time, cont string, textos ...string) []model.LineaLog {
 	return out
 }
 
+// lineasNiveladas es lo mismo que lineas pero con el nivel puesto, que es como
+// entran en producción: la ingesta guarda logs.Nivelar y no un INFO por
+// defecto. Un test que compare "el nivel de antes" contra "el nivel después de
+// deshacer" tiene que partir de acá, o compara el INFO del helper contra lo que
+// dice el clasificador y falla sin que haya nada roto.
+func lineasNiveladas(base time.Time, cont string, textos ...string) []model.LineaLog {
+	out := lineas(base, cont, textos...)
+	for i := range out {
+		out[i].Nivel = string(logs.Clasificar(out[i].Linea, out[i].Stream))
+	}
+	return out
+}
+
 func TestInsertLogsYBusquedaPorTexto(t *testing.T) {
 	s := abrir(t)
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
@@ -996,7 +1011,7 @@ func TestBackfillClasificaLasFilasViejas(t *testing.T) {
 	}
 
 	// Un clasificador de tres líneas: es justo lo que el parámetro hace posible.
-	clasificar := func(linea, stream string) string {
+	clasificar := func(linea, stream, container string) string {
 		if linea == "tres" {
 			return "ERROR"
 		}
@@ -1033,7 +1048,7 @@ func TestBackfillClasificaLasFilasViejas(t *testing.T) {
 // reprocesaría las 802 200 filas de la base del VPS.
 func TestBackfillNoRepiteCuandoYaTermino(t *testing.T) {
 	s := abrir(t)
-	n, listo, err := s.BackfillNiveles(func(l, st string) string { return "INFO" }, 100)
+	n, listo, err := s.BackfillNiveles(func(l, st, c string) string { return "INFO" }, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1205,5 +1220,395 @@ func TestLogsDesdeRowidNoSalteaCuandoHayMasQueElTope(t *testing.T) {
 
 	if got, quiero := strings.Join(vistas, ","), "a,b,c,d,e"; got != quiero {
 		t.Errorf("vistas = %q, quería %q — el cursor salteó líneas", got, quiero)
+	}
+}
+
+// El corpus es de líneas reales del VPS, con variantes de caja a propósito.
+// Es lo que hace que el test pueda fallar: con LIKE, el patrón "egress-probe"
+// también matchearía "EGRESS-PROBE" y el conteo de SQL se iría por encima del
+// de Go en exactamente una línea.
+var corpusReal = []string{
+	`172.19.0.2 - - [31/Aug/2026:19:50:30 +0000] "GET /auth/v1/health HTTP/1.1" 401 96 "-" "egress-probe"`,
+	`172.19.0.2 - - [31/Aug/2026:19:51:30 +0000] "GET /auth/v1/health HTTP/1.1" 401 96 "-" "egress-probe"`,
+	`172.19.0.2 - - [31/Aug/2026:19:52:30 +0000] "GET /auth/v1/health HTTP/1.1" 200 107 "-" "server-status"`,
+	`172.19.0.2 - - [31/Aug/2026:15:34:35 +0000] "GET /rest/v1/workouts?select=id HTTP/1.1" 401 79 "https://gym-tracker-brown-one.vercel.app/" "Mozilla/5.0"`,
+	`172.19.0.2 - - [31/Aug/2026:15:35:35 +0000] "GET /egress-probe HTTP/1.1" 404 79 "-" "curl/8.7.1"`,
+	`172.19.0.2 - - [31/Aug/2026:15:36:35 +0000] "GET /health HTTP/1.1" 200 79 "-" "EGRESS-PROBE"`,
+	` 2026-08-22 07:38:00.012 UTC [38] ERROR:  relation "x" does not exist`,
+	` 2026-08-22 07:38:01.012 UTC [38] LOG:  cron job 1 completed: 0 rows`,
+	`{"component":"api","level":"info","method":"GET","msg":"400: Unsupported provider","path":"/authorize"}`,
+	"\tselect v.planned_minutes, error from con_subs;",
+}
+
+// El mismo corpus por los dos caminos. Si instr() y strings.Contains difieren
+// en UNA sola línea, este test lo dice.
+func TestGoYSQLCuentanIgual(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "supabase-kong", corpusReal...)); err != nil {
+		t.Fatal(err)
+	}
+	// La misma línea en otro container: sin esto el scope por container no se
+	// ejercita y una regla global pasaría por una acotada.
+	if err := s.InsertLogs(lineas(base, "otro-kong", corpusReal[0])); err != nil {
+		t.Fatal(err)
+	}
+
+	patrones := []string{
+		`"GET /auth/v1/health HTTP/1.1" 401 96 "-" "egress-probe"`,
+		"egress-probe",
+		"EGRESS-PROBE",
+		"ERROR:",
+		"error",
+		"cron job",
+		`"level":"info"`,
+		"no aparece en ninguna línea",
+	}
+	containers := []string{"", "supabase-kong", "otro-kong"}
+	todas := append(append([]model.LineaLog{}, lineas(base, "supabase-kong", corpusReal...)...),
+		lineas(base, "otro-kong", corpusReal[0])...)
+
+	for _, p := range patrones {
+		for _, c := range containers {
+			enSQL, err := s.ContarPorPatron(p, c)
+			if err != nil {
+				t.Fatalf("ContarPorPatron(%q, %q): %v", p, c, err)
+			}
+			r := logs.Regla{Patron: p, Container: c}
+			enGo := 0
+			for _, l := range todas {
+				if r.Coincide(l.Linea, l.Container) {
+					enGo++
+				}
+			}
+			if enSQL != enGo {
+				t.Errorf("patrón %q container %q: SQL contó %d y Go %d", p, c, enSQL, enGo)
+			}
+		}
+	}
+}
+
+// Las reglas vuelven en orden de id, que es el orden en que se aplican: gana
+// la última que matchea. Si el SELECT no lo fija, el desempate pasa a depender
+// de cómo le pinte a SQLite devolver las filas.
+func TestReglasNivelRoundTrip(t *testing.T) {
+	s := abrir(t)
+	creada := time.Date(2026, 8, 31, 20, 0, 0, 0, time.UTC)
+
+	primera, _, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "egress-probe", Container: "", Nivel: "TRACE",
+		Motivo: "es nuestra propia sonda", Creada: creada,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	segunda, _, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "cron job", Container: "supabase-db", Nivel: "ERROR",
+		Motivo: "quiero verlo en la línea de tiempo", Creada: creada.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rs, err := s.ReglasNivel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 2 || rs[0].ID != primera || rs[1].ID != segunda {
+		t.Fatalf("reglas = %+v, quería las dos en orden de id", rs)
+	}
+	if rs[0].Motivo != "es nuestra propia sonda" || !rs[0].Creada.Equal(creada) {
+		t.Errorf("la primera volvió incompleta: %+v", rs[0])
+	}
+	if rs[1].Container != "supabase-db" || rs[1].Nivel != "ERROR" {
+		t.Errorf("la segunda volvió incompleta: %+v", rs[1])
+	}
+
+	aplicar, err := s.ReglasParaAplicar()
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiero := logs.Reglas{
+		{Patron: "egress-probe", Container: "", Nivel: logs.Trace},
+		{Patron: "cron job", Container: "supabase-db", Nivel: logs.Error},
+	}
+	if !reflect.DeepEqual(aplicar, quiero) {
+		t.Errorf("ReglasParaAplicar = %+v, quería %+v", aplicar, quiero)
+	}
+}
+
+// LA afirmación central: el número que se muestra antes de confirmar es el
+// número de filas que quedan cambiadas. Si divergen, el preview es decorativo.
+//
+// La regla SUBE a ERROR en vez de bajar a TRACE a propósito: el 401 de la
+// sonda propia ya es TRACE desde el arreglo del clasificador, así que una
+// regla a TRACE no dejaría ver ninguna diferencia y este test pasaría igual
+// con la aplicación retroactiva rota. De paso ejercita la otra dirección, que
+// también existe: subir algo que el clasificador subestimó.
+func TestElPreviewEsExactamenteElEfecto(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "supabase-kong", corpusReal...)); err != nil {
+		t.Fatal(err)
+	}
+	// La MISMA línea en otro container: la regla está acotada y no la toca.
+	if err := s.InsertLogs(lineas(base, "otro-kong", corpusReal[0])); err != nil {
+		t.Fatal(err)
+	}
+
+	const patron = `"-" "egress-probe"`
+	previo, err := s.ContarPorPatron(patron, "supabase-kong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if previo != 2 {
+		t.Fatalf("el preview contó %d, quería las 2 líneas de la sonda", previo)
+	}
+
+	_, filas, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: patron, Container: "supabase-kong", Nivel: "ERROR",
+		Motivo: "quiero verla en la línea de tiempo", Creada: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filas != previo {
+		t.Errorf("el preview dijo %d y cambiaron %d filas", previo, filas)
+	}
+
+	// Y el efecto se ve donde importa, que es la vista.
+	enError, err := s.BuscarLogs("", "supabase-kong", []string{"ERROR"},
+		time.Time{}, base.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quedaron := 0
+	for _, l := range enError {
+		if strings.Contains(l.Linea, patron) {
+			quedaron++
+		}
+	}
+	if quedaron != previo {
+		t.Errorf("quedaron %d líneas en ERROR, quería %d", quedaron, previo)
+	}
+
+	// La del otro container no se toca: el scope es parte de la regla.
+	ajenas, err := s.BuscarLogs("", "otro-kong", []string{"ERROR"},
+		time.Time{}, base.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ajenas) != 0 {
+		t.Errorf("la regla acotada a supabase-kong tocó al otro container: %+v", ajenas)
+	}
+}
+
+// Una fila anterior a la migración 9 que el backfill todavía no alcanzó NO
+// tiene su fila en log_niveles. El preview la cuenta igual, porque sale de
+// logs. Con un UPDATE pelado no se tocaría, y el número confirmado sería más
+// grande que el aplicado: por eso la aplicación retroactiva es un upsert.
+func TestLaReglaAlcanzaALasFilasSinNivel(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "kong", "ruido de la sonda", "otra cosa")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OlvidarNivelParaTest(1); err != nil {
+		t.Fatal(err)
+	}
+
+	previo, err := s.ContarPorPatron("ruido de la sonda", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, filas, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "ruido de la sonda", Nivel: "TRACE",
+		Motivo: "la fila no tenía nivel", Creada: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filas != previo || filas != 1 {
+		t.Fatalf("preview %d, filas %d, quería 1 y 1", previo, filas)
+	}
+
+	got, err := s.BuscarLogs("", "", []string{"TRACE"}, time.Time{}, base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Linea != "ruido de la sonda" {
+		t.Errorf("got = %+v, quería la línea sin nivel ya en TRACE", got)
+	}
+}
+
+// El undo es EXACTO y no aproximado: el nivel que queda es el que tendría la
+// línea si la regla no hubiera existido nunca. Se puede porque Clasificar es
+// determinística.
+func TestBorrarUnaReglaDevuelveElNivelOriginal(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineasNiveladas(base, "supabase-kong", corpusReal...)); err != nil {
+		t.Fatal(err)
+	}
+
+	antes, err := s.BuscarLogs("", "supabase-kong", []string{"TRACE", "INFO", "WARN", "ERROR"},
+		time.Time{}, base.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, filas, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "egress-probe", Nivel: "TRACE", Motivo: "sonda propia", Creada: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deshechas, err := s.BorrarReglaNivel(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deshechas != filas {
+		t.Errorf("borrar tocó %d filas y crear había tocado %d", deshechas, filas)
+	}
+
+	despues, err := s.BuscarLogs("", "supabase-kong", []string{"TRACE", "INFO", "WARN", "ERROR"},
+		time.Time{}, base.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(antes) != len(despues) {
+		t.Fatalf("cambió la cantidad de líneas: %d contra %d", len(antes), len(despues))
+	}
+	for i := range antes {
+		if antes[i].Linea != despues[i].Linea || antes[i].Nivel != despues[i].Nivel {
+			t.Errorf("línea %q quedó en %q y era %q", despues[i].Linea, despues[i].Nivel, antes[i].Nivel)
+		}
+	}
+
+	if rs, err := s.ReglasNivel(); err != nil || len(rs) != 0 {
+		t.Errorf("reglas = %+v err = %v, quería ninguna", rs, err)
+	}
+}
+
+// Con dos reglas encima de la misma línea, borrar una no puede llevarse el
+// efecto de la otra. Por eso el undo re-aplica las reglas que quedan y no
+// solamente Clasificar.
+func TestBorrarUnaReglaNoSeLlevaLaOtra(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "kong", corpusReal[0])); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "egress-probe", Nivel: "INFO", Motivo: "primera", Creada: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	segunda, _, err := s.CrearReglaNivel(model.ReglaNivel{
+		Patron: "auth/v1/health", Nivel: "TRACE", Motivo: "segunda", Creada: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.BorrarReglaNivel(segunda); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.BuscarLogs("", "", []string{"TRACE", "INFO", "WARN", "ERROR"},
+		time.Time{}, base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Nivel != "INFO" {
+		t.Errorf("quedó en %+v, quería INFO: borrar la segunda se llevó la primera", got)
+	}
+}
+
+// Borrar dos veces la misma regla no es un error: el segundo click no puede
+// devolver un 500.
+func TestBorrarUnaReglaQueNoEstaNoEsError(t *testing.T) {
+	s := abrir(t)
+	n, err := s.BorrarReglaNivel(404)
+	if err != nil || n != 0 {
+		t.Errorf("n=%d err=%v, quería 0 y nil", n, err)
+	}
+}
+
+// El backfill tiene que pasarle el container a quien nivela: una regla puede
+// estar acotada a un container, y sin ese dato la reprocesada de las filas
+// viejas la ignoraría en silencio.
+func TestBackfillLePasaElContainer(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "kong", "una", "dos")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertLogs(lineas(base, "db", "una")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReiniciarBackfillParaTest(); err != nil {
+		t.Fatal(err)
+	}
+
+	nivelar := func(linea, stream, container string) string {
+		if container == "db" {
+			return "ERROR"
+		}
+		return "TRACE"
+	}
+	for i := 0; i < 10; i++ {
+		_, listo, err := s.BackfillNiveles(nivelar, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listo {
+			break
+		}
+	}
+
+	got, err := s.BuscarLogs("", "", []string{"ERROR"}, time.Time{}, base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Container != "db" {
+		t.Errorf("got = %+v, quería solo la línea de db en ERROR", got)
+	}
+}
+
+// La vista necesita el rowid para poder linkear a "hacer una regla con esta
+// línea". Antes se descartaba a propósito en selectLogs, con un 0 literal.
+func TestBuscarLogsTraeElRowid(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "kong", "una", "dos")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.BuscarLogs("", "", nil, time.Time{}, base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d líneas, quería 2", len(got))
+	}
+	for _, l := range got {
+		if l.Rowid == 0 {
+			t.Errorf("la línea %q volvió sin rowid", l.Linea)
+		}
+	}
+
+	l, hay, err := s.LineaPorRowid(got[0].Rowid)
+	if err != nil || !hay {
+		t.Fatalf("LineaPorRowid: hay=%v err=%v", hay, err)
+	}
+	if l.Linea != got[0].Linea || l.Container != "kong" || l.Nivel != got[0].Nivel {
+		t.Errorf("volvió %+v, quería %+v", l, got[0])
+	}
+
+	if _, hay, err := s.LineaPorRowid(99999); err != nil || hay {
+		t.Errorf("un rowid que no existe: hay=%v err=%v, quería false y nil", hay, err)
 	}
 }

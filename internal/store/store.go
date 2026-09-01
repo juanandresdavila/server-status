@@ -159,6 +159,23 @@ var migraciones = []string{
 	// —/events lo sigue mostrando como historia— pero deja de ocupar la tabla
 	// del panel. Solo se archiva uno cerrado; ver ArchivarIncidente.
 	`ALTER TABLE incidents ADD COLUMN archived_at INTEGER;`,
+
+	// Las reglas de nivel corrigen lo que el clasificador no puede saber: que
+	// el 401 que Kong le devuelve a nuestra propia sonda no es un problema del
+	// sistema. Sin esto, cada container ruidoso nuevo cuesta un commit, un
+	// cross-compile, un deploy y un UPDATE a mano, que es lo que costó el
+	// 31/08/2026, cuando 8625 de los 8625 WARN de 24 h eran esa sonda.
+	//
+	// Se aplican por orden de id y gana la última que matchea: arbitrario,
+	// pero predecible.
+	`CREATE TABLE reglas_nivel (
+		id        INTEGER PRIMARY KEY,
+		patron    TEXT NOT NULL,
+		container TEXT NOT NULL,   -- '' = todos
+		nivel     TEXT NOT NULL,   -- TRACE | INFO | WARN | ERROR
+		motivo    TEXT NOT NULL,
+		creada    INTEGER NOT NULL
+	) STRICT;`,
 }
 
 type Store struct{ db *sql.DB }
@@ -764,7 +781,7 @@ func (s *Store) MaxRowidLogs() (int64, error) {
 // Devuelve las líneas de la más nueva a la más vieja, igual que BuscarLogs,
 // para que la vista las pueda pegar arriba sin reordenar nada.
 func (s *Store) LogsDesdeRowid(texto, container string, niveles []string, desde int64, limite int) ([]model.LineaLog, int64, error) {
-	q := selectLogsConRowid + ` WHERE l.rowid > ?`
+	q := selectLogs + ` WHERE l.rowid > ?`
 	args := []any{desde}
 	q, args = filtroLogs(q, args, texto, container, niveles)
 
@@ -797,11 +814,22 @@ func (s *Store) LogsDesdeRowid(texto, container string, niveles []string, desde 
 // COALESCE porque una fila insertada antes de la migración 9 todavía puede no
 // tener nivel si el backfill no llegó: se la trata como INFO en vez de hacerla
 // desaparecer.
-const selectLogs = `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO'), 0
+//
+// El rowid viene SIEMPRE. Antes había dos constantes, una con un 0 literal en
+// su lugar, y eso dejaba a la vista sin forma de referirse a una línea.
+const selectLogs = `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO'), l.rowid
 	      FROM logs l LEFT JOIN log_niveles n ON n.rowid = l.rowid`
 
-const selectLogsConRowid = `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO'), l.rowid
-	      FROM logs l LEFT JOIN log_niveles n ON n.rowid = l.rowid`
+// LineaPorRowid trae una línea guardada por su id. Es lo que prellena el form
+// de una regla nueva. El bool es false cuando la línea ya no está: la
+// retención la puede haber podado entre que se pintó la vista y se hizo click.
+func (s *Store) LineaPorRowid(rowid int64) (model.LineaLog, bool, error) {
+	ls, _, err := s.consultarLogs(selectLogs+` WHERE l.rowid = ?`, []any{rowid})
+	if err != nil || len(ls) == 0 {
+		return model.LineaLog{}, false, err
+	}
+	return ls[0], true, nil
+}
 
 // filtroLogs pega los filtros que comparten la vista y el modo en vivo. Vive
 // en un solo lugar porque el día que se agregue uno y se olvide de la otra
@@ -828,6 +856,229 @@ func filtroLogs(q string, args []any, texto, container string, niveles []string)
 	return q, args
 }
 
+// consultador es lo que necesitan las lecturas de reglas, para poder correr
+// tanto sobre la base como adentro de una transacción.
+type consultador interface {
+	Query(string, ...any) (*sql.Rows, error)
+}
+
+// ReglasNivel devuelve las reglas guardadas EN ORDEN DE ID, que es el orden en
+// que se aplican. Es la lista que muestra el panel.
+func (s *Store) ReglasNivel() ([]model.ReglaNivel, error) { return leerReglas(s.db) }
+
+func leerReglas(q consultador) ([]model.ReglaNivel, error) {
+	filas, err := q.Query(`SELECT id, patron, container, nivel, motivo, creada
+		FROM reglas_nivel ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+
+	var out []model.ReglaNivel
+	for filas.Next() {
+		var r model.ReglaNivel
+		var creada int64
+		if err := filas.Scan(&r.ID, &r.Patron, &r.Container, &r.Nivel, &r.Motivo, &creada); err != nil {
+			return nil, err
+		}
+		r.Creada = time.Unix(creada, 0).UTC()
+		out = append(out, r)
+	}
+	return out, filas.Err()
+}
+
+// ReglasParaAplicar es lo mismo reducido a lo que hace falta para nivelar una
+// línea. La conversión vive en UN solo lugar a propósito: repetirla en el
+// ingestor y acá es la forma segura de que un día difieran.
+func (s *Store) ReglasParaAplicar() (logs.Reglas, error) {
+	filas, err := s.ReglasNivel()
+	if err != nil {
+		return nil, err
+	}
+	return reglasDe(filas), nil
+}
+
+func reglasDe(filas []model.ReglaNivel) logs.Reglas {
+	out := make(logs.Reglas, 0, len(filas))
+	for _, f := range filas {
+		out = append(out, logs.Regla{Patron: f.Patron, Container: f.Container, Nivel: logs.Nivel(f.Nivel)})
+	}
+	return out
+}
+
+// CrearReglaNivel guarda la regla y la aplica a lo que ya estaba guardado.
+// Devuelve el id y cuántas filas quedaron con el nivel nuevo, que TIENE que ser
+// el mismo número que devolvió ContarPorPatron con el mismo patrón y container.
+//
+// ⚠️ Las dos cosas van en la misma transacción y el UPDATE está medido: 43 679
+// filas en 9,4 s sobre las 925 000 de la base del VPS. El store abre UNA sola
+// conexión a SQLite, así que durante esos 9 segundos el ciclo del minuto no
+// tiene base: el tick de muestreo se atrasa y los logs de ese minuto entran en
+// el siguiente. Es tolerable porque esto lo dispara una persona apretando un
+// botón; no lo sería para algo automático ni para algo por lotes en background.
+func (s *Store) CrearReglaNivel(r model.ReglaNivel) (int64, int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`INSERT INTO reglas_nivel (patron, container, nivel, motivo, creada)
+		VALUES (?,?,?,?,?)`, r.Patron, r.Container, r.Nivel, r.Motivo, r.Creada.Unix())
+	if err != nil {
+		return 0, 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	donde, args := dondeCoincide(r.Patron, r.Container)
+	// INSERT ... ON CONFLICT y no un UPDATE pelado: una fila anterior a la
+	// migración 9 que el backfill todavía no alcanzó no tiene fila en
+	// log_niveles y un UPDATE no la tocaría. El preview la cuenta igual,
+	// porque sale de logs, así que con UPDATE el número confirmado sería más
+	// grande que el aplicado. Acá el upsert la crea.
+	res, err = tx.Exec(`INSERT INTO log_niveles (rowid, nivel)
+		SELECT l.rowid, ? FROM logs l`+donde+`
+		ON CONFLICT(rowid) DO UPDATE SET nivel = excluded.nivel`,
+		append([]any{r.Nivel}, args...)...)
+	if err != nil {
+		return 0, 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return id, int(n), nil
+}
+
+// BorrarReglaNivel saca la regla y devuelve las filas que tocaba al nivel que
+// les corresponde SIN ella. El undo es exacto y no aproximado porque
+// Clasificar es determinística: sin esto, una regla sería un cambio
+// irreversible sobre datos.
+//
+// Se re-aplican las reglas que QUEDAN y no solo Clasificar: si dos reglas
+// pisan la misma línea, borrar una no puede llevarse el efecto de la otra. Es
+// la misma composición que usa la ingesta, logs.Nivelar, y por eso el nivel
+// guardado siempre termina siendo el mismo que tendría una línea recién
+// entrada.
+//
+// ⚠️ Vale la misma advertencia que CrearReglaNivel: son decenas de miles de
+// filas sobre la única conexión a SQLite, y mientras dura el ciclo del minuto
+// espera. Las filas se leen ENTERAS a memoria antes de escribir porque con una
+// sola conexión no se puede escribir con un cursor de lectura abierto; son unos
+// pocos MB para el caso medido.
+//
+// Una regla que no existe devuelve 0 y nil: el segundo click del panel no es
+// un error.
+func (s *Store) BorrarReglaNivel(id int64) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var patron, container string
+	err = tx.QueryRow(`SELECT patron, container FROM reglas_nivel WHERE id = ?`, id).
+		Scan(&patron, &container)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`DELETE FROM reglas_nivel WHERE id = ?`, id); err != nil {
+		return 0, err
+	}
+
+	quedan, err := leerReglas(tx)
+	if err != nil {
+		return 0, err
+	}
+	reglas := reglasDe(quedan)
+
+	donde, args := dondeCoincide(patron, container)
+	filas, err := tx.Query(`SELECT l.rowid, l.linea, l.stream, l.container FROM logs l`+donde, args...)
+	if err != nil {
+		return 0, err
+	}
+	type fila struct {
+		rowid                    int64
+		linea, stream, container string
+	}
+	var fs []fila
+	for filas.Next() {
+		var f fila
+		if err := filas.Scan(&f.rowid, &f.linea, &f.stream, &f.container); err != nil {
+			filas.Close()
+			return 0, err
+		}
+		fs = append(fs, f)
+	}
+	filas.Close()
+	if err := filas.Err(); err != nil {
+		return 0, err
+	}
+
+	stmt, err := tx.Prepare(`INSERT INTO log_niveles (rowid, nivel) VALUES (?,?)
+		ON CONFLICT(rowid) DO UPDATE SET nivel = excluded.nivel`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	for _, f := range fs {
+		nivel := logs.Nivelar(reglas, f.linea, f.stream, f.container)
+		if _, err := stmt.Exec(f.rowid, string(nivel)); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(fs), nil
+}
+
+// dondeCoincide es la ÚNICA definición SQL de "esta línea matchea el patrón".
+// La usan el conteo previo, la aplicación retroactiva y el borrado, así que los
+// tres no pueden diferir ni queriendo.
+//
+// instr() y NUNCA LIKE: LIKE es case-insensitive para ASCII y el equivalente en
+// Go, logs.Regla.Coincide con strings.Contains, no lo es. Con LIKE, el número
+// que el usuario confirma en el preview no es el que le queda aplicado.
+// TestGoYSQLCuentanIgual corre los dos caminos sobre el mismo corpus.
+//
+// Sin regex: además de invitar a patrones catastróficos, la semántica de
+// SQLite y la de Go no coinciden y no hay test que pueda cerrar ese abismo.
+func dondeCoincide(patron, container string) (string, []any) {
+	q := ` WHERE instr(l.linea, ?) > 0`
+	args := []any{patron}
+	if container != "" {
+		q += ` AND l.container = ?`
+		args = append(args, container)
+	}
+	return q, args
+}
+
+// ContarPorPatron dice cuántas líneas guardadas matchean. Es el número que el
+// preview muestra antes de confirmar, y TIENE que ser el mismo que devuelve
+// CrearReglaNivel: es la afirmación central de toda esta función.
+//
+// ⚠️ Es un scan completo: en la tabla FTS5 `logs`, ts y container son
+// UNINDEXED. Sobre las 925 000 filas de la base del VPS eso son segundos, y el
+// store abre UNA sola conexión, así que mientras dura el ciclo del minuto
+// espera. Es tolerable porque lo dispara una persona apretando un botón; no lo
+// sería para algo automático.
+func (s *Store) ContarPorPatron(patron, container string) (int, error) {
+	donde, args := dondeCoincide(patron, container)
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM logs l`+donde, args...).Scan(&n)
+	return n, err
+}
+
 // consultarLogs escanea las filas y devuelve de paso el rowid más alto que vio.
 func (s *Store) consultarLogs(q string, args []any) ([]model.LineaLog, int64, error) {
 	filas, err := s.db.Query(q, args...)
@@ -845,6 +1096,7 @@ func (s *Store) consultarLogs(q string, args []any) ([]model.LineaLog, int64, er
 			return nil, 0, err
 		}
 		l.TS = time.Unix(ts, 0).UTC()
+		l.Rowid = rowid
 		if rowid > max {
 			max = rowid
 		}
@@ -948,13 +1200,14 @@ func (s *Store) BorrarLogsAnterioresA(corte time.Time) error {
 // BackfillNiveles clasifica un lote de las líneas que ya estaban guardadas
 // cuando se aplicó la migración 9. Devuelve cuántas procesó y si ya terminó.
 //
-// El clasificador entra por parámetro y no por import para que el store no
-// dependa de internal/logs — la misma razón por la que rules declara su propia
-// interfaz Store. Y así el backfill se testea con una función de tres líneas.
+// Quien nivela entra por parámetro para que el backfill se pueda testear con
+// una función de tres líneas. Recibe también el CONTAINER porque una regla de
+// nivel puede estar acotada a uno: sin ese dato, la reprocesada de las filas
+// viejas ignoraría el scope en silencio.
 //
 // Va por lotes y guarda por dónde iba: son 802 200 filas en la base del VPS y
 // hacerlo de una dejaría el arranque bloqueado varios minutos.
-func (s *Store) BackfillNiveles(clasificar func(linea, stream string) string, lote int) (int, bool, error) {
+func (s *Store) BackfillNiveles(nivelar func(linea, stream, container string) string, lote int) (int, bool, error) {
 	var techo, ultimo int64
 	err := s.db.QueryRow(`SELECT hasta_rowid, ultimo FROM backfill_niveles WHERE id = 1`).Scan(&techo, &ultimo)
 	if err != nil {
@@ -965,19 +1218,19 @@ func (s *Store) BackfillNiveles(clasificar func(linea, stream string) string, lo
 	}
 
 	filas, err := s.db.Query(`
-		SELECT rowid, linea, stream FROM logs
+		SELECT rowid, linea, stream, container FROM logs
 		WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`, ultimo, techo, lote)
 	if err != nil {
 		return 0, false, err
 	}
 	type fila struct {
-		rowid         int64
-		linea, stream string
+		rowid                    int64
+		linea, stream, container string
 	}
 	var fs []fila
 	for filas.Next() {
 		var f fila
-		if err := filas.Scan(&f.rowid, &f.linea, &f.stream); err != nil {
+		if err := filas.Scan(&f.rowid, &f.linea, &f.stream, &f.container); err != nil {
 			filas.Close()
 			return 0, false, err
 		}
@@ -1009,7 +1262,7 @@ func (s *Store) BackfillNiveles(clasificar func(linea, stream string) string, lo
 	defer stmt.Close()
 
 	for _, f := range fs {
-		if _, err := stmt.Exec(f.rowid, clasificar(f.linea, f.stream)); err != nil {
+		if _, err := stmt.Exec(f.rowid, nivelar(f.linea, f.stream, f.container)); err != nil {
 			return 0, false, err
 		}
 	}
