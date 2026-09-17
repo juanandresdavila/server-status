@@ -1612,3 +1612,94 @@ func TestBuscarLogsTraeElRowid(t *testing.T) {
 		t.Errorf("un rowid que no existe: hay=%v err=%v, quería false y nil", hay, err)
 	}
 }
+
+// La base del detector de reinicios. El 17/09/2026 supabase-auth se recreó
+// justo en el tick de las 14:47: el Inspect dio 404 y esa muestra quedó con
+// started_at = 0. La base tiene que saltear ese cero y traer el último
+// arranque conocido: el de la muestra más reciente, no uno cualquiera.
+func TestUltimoArranqueConocidoSalteaElCeroYTraeElMasReciente(t *testing.T) {
+	s := abrir(t)
+	t1440 := time.Date(2026, 9, 17, 14, 40, 0, 0, time.UTC)
+	t1446 := t1440.Add(6 * time.Minute)
+	t1447 := t1446.Add(time.Minute)
+
+	masViejo := time.Date(2026, 8, 20, 9, 12, 3, 0, time.UTC)
+	conocido := time.Date(2026, 8, 22, 5, 0, 41, 207318554, time.UTC)
+
+	for _, tanda := range [][]model.ContainerSample{
+		{{TS: t1440, Name: "supabase-auth", State: "running", Health: "starting", StartedAt: masViejo}},
+		{{TS: t1446, Name: "supabase-auth", State: "running", Health: "healthy", StartedAt: conocido}},
+		{{TS: t1447, Name: "supabase-auth", State: "running", Health: "", StartedAt: time.Time{}}},
+	} {
+		if err := s.InsertContainerSamples(tanda); err != nil {
+			t.Fatalf("InsertContainerSamples: %v", err)
+		}
+	}
+
+	got, err := s.UltimoArranqueConocido(time.Hour)
+	if err != nil {
+		t.Fatalf("UltimoArranqueConocido: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("volvieron %d filas, quería 1: %+v", len(got), got)
+	}
+	// Vuelve en segundos: la base no guarda la fracción.
+	quiero := time.Unix(conocido.Unix(), 0).UTC()
+	if !got[0].StartedAt.Equal(quiero) {
+		t.Errorf("StartedAt = %v, quería %v: ni el cero ni el más viejo", got[0].StartedAt, quiero)
+	}
+	// Las demás columnas son de ESA fila y no de otra del mismo container.
+	if !got[0].TS.Equal(t1446) || got[0].Health != "healthy" {
+		t.Errorf("fila = %+v, quería la de las 14:46", got[0])
+	}
+}
+
+// La ventana se cuenta desde el último tick GUARDADO, no desde el reloj: si
+// server-status estuvo caído más que la ventana, al volver la base sigue siendo
+// lo último que vio. Y un container que no aparece desde hace más que la
+// ventana deja de ser base: si vuelve, es nuevo. El borde es inclusive.
+func TestUltimoArranqueConocidoCuentaLaVentanaDesdeElUltimoTick(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	arranco := time.Date(2026, 8, 22, 5, 0, 41, 0, time.UTC)
+	fila := func(min int, name string) []model.ContainerSample {
+		return []model.ContainerSample{{
+			TS: base.Add(time.Duration(min) * time.Minute), Name: name,
+			State: "running", StartedAt: arranco,
+		}}
+	}
+
+	// El último tick es el del minuto 61. "borde" se vio por última vez 60
+	// minutos antes; "afuera", 61.
+	for _, tanda := range [][]model.ContainerSample{
+		fila(0, "afuera"), fila(1, "borde"), fila(61, "quieto"),
+	} {
+		if err := s.InsertContainerSamples(tanda); err != nil {
+			t.Fatalf("InsertContainerSamples: %v", err)
+		}
+	}
+
+	got, err := s.UltimoArranqueConocido(time.Hour)
+	if err != nil {
+		t.Fatalf("UltimoArranqueConocido: %v", err)
+	}
+	var nombres []string
+	for _, c := range got {
+		nombres = append(nombres, c.Name)
+	}
+	if !reflect.DeepEqual(nombres, []string{"borde", "quieto"}) {
+		t.Errorf("base = %v, quería [borde quieto]", nombres)
+	}
+}
+
+// Base recién creada: no hay con qué comparar, y eso no es un error.
+func TestUltimoArranqueConocidoSinMuestras(t *testing.T) {
+	s := abrir(t)
+	got, err := s.UltimoArranqueConocido(time.Hour)
+	if err != nil {
+		t.Fatalf("UltimoArranqueConocido: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("volvieron %d filas de una base vacía", len(got))
+	}
+}

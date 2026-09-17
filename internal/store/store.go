@@ -388,7 +388,44 @@ func (s *Store) UltimoEstadoContainers() ([]model.ContainerSample, error) {
 		return nil, err
 	}
 	defer filas.Close()
+	return escanearContainers(filas)
+}
 
+// UltimoArranqueConocido es la base contra la que se detectan los reinicios:
+// por container, la muestra más reciente con started_at conocido dentro de la
+// ventana que termina en el último tick guardado.
+//
+// No es la foto del minuto anterior (UltimoEstadoContainers) porque el cero de
+// started_at también significa "el Inspect falló", y el Inspect falla justo
+// cuando un container se recrea: el listado trae el viejo, se pide su detalle
+// y compose ya lo borró. Pasó con supabase-auth el 17/09/2026: comparar contra
+// esa foto era comparar contra un cero, y el detector saltea los ceros.
+//
+// La ventana se cuenta desde MAX(ts) y no desde el reloj: si el proceso estuvo
+// caído más que la ventana, al volver la base sigue siendo lo último que vio,
+// igual que con UltimoEstadoContainers.
+//
+// Las columnas sueltas junto a MAX(ts) salen de la fila que tiene ese máximo.
+// Es comportamiento documentado de SQLite cuando hay un único min() o max()
+// (sqlite.org/lang_select.html#bareagg), y el test lo verifica.
+func (s *Store) UltimoArranqueConocido(ventana time.Duration) ([]model.ContainerSample, error) {
+	filas, err := s.db.Query(`
+		SELECT MAX(ts), name, state, health, restarts, cpu_pct, mem_bytes, started_at
+		FROM container_samples
+		WHERE started_at > 0
+		  AND ts >= (SELECT MAX(ts) FROM container_samples) - ?
+		GROUP BY name
+		ORDER BY name`, int64(ventana/time.Second))
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+	return escanearContainers(filas)
+}
+
+// escanearContainers lee filas con las columnas en este orden: ts, name,
+// state, health, restarts, cpu_pct, mem_bytes, started_at.
+func escanearContainers(filas *sql.Rows) ([]model.ContainerSample, error) {
 	var out []model.ContainerSample
 	for filas.Next() {
 		var (
@@ -403,8 +440,9 @@ func (s *Store) UltimoEstadoContainers() ([]model.ContainerSample, error) {
 		c.TS = time.Unix(ts, 0).UTC()
 		c.MemBytes = uint64(mem)
 		// started_at en 0 es "no se sabe": las filas anteriores a la migración
-		// 10 no lo tienen. Se deja el cero de time.Time para que el detector
-		// las ignore en vez de leerlas como un arranque en 1970.
+		// 10 no lo tienen, y un Inspect fallido lo deja en cero. Se deja el cero
+		// de time.Time para que el detector las ignore en vez de leerlas como
+		// un arranque en 1970.
 		if arranco > 0 {
 			c.StartedAt = time.Unix(arranco, 0).UTC()
 		}
