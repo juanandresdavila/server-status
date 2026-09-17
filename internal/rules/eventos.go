@@ -75,10 +75,17 @@ func DetectarReinicioContainers(antes, despues []model.ContainerSample, ahora ti
 		// Un container que aparece por primera vez no se reinició: es nuevo.
 		case !estaba:
 			continue
-		// started_at en cero es "no se sabe" —las filas anteriores a la
-		// migración 10 no lo tienen—. Leerlo como un arranque en 1970 haría
-		// que TODO container pareciera recién reiniciado en el primer tick
-		// después del deploy.
+		// started_at en cero es "no se sabe", por dos motivos: las filas
+		// anteriores a la migración 10 no lo tienen, y un Inspect que falló lo
+		// deja en cero (da 404 justo cuando compose recrea el container).
+		// Leerlo como un arranque en 1970 haría que TODO container pareciera
+		// recién reiniciado en el primer tick después del deploy.
+		//
+		// El ciclo ya no le pasa ceros en "antes": su base es el último
+		// arranque conocido (store.UltimoArranqueConocido), porque comparar
+		// contra la foto del minuto anterior perdió la recreación del
+		// 17/09/2026. La guarda queda por el "después" en cero, que es el tick
+		// que cae en la recreación.
 		case anterior.IsZero() || c.StartedAt.IsZero():
 			continue
 		// La comparación va truncada al SEGUNDO porque esa es la resolución con
