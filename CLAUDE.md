@@ -359,6 +359,17 @@ a tocarlos todos cada vez que se agrega una.
 - **`t.In(nil)` paniquea, y un panic adentro de una plantilla deja media página
   escrita con un `200` arriba.** El error de `ExecuteTemplate` hay que mirarlo:
   si no, una plantilla rota se ve como una página cortada y no como un fallo.
+- **Datos con fecha fija más una ventana relativa (`horas=`) contra el reloj
+  real es un test que vence solo.** El panel llamaba a `time.Now()` y los tests
+  de `/events` pedían `horas=720` sobre datos de agosto de 2026: el 08/09/2026
+  el primero quedó afuera y el CI de `main` se puso rojo sin que nada estuviera
+  roto; el 21/09 caían seis más. Peor que el rojo fue el verde vacío: la
+  aserción negativa de `TestVistaEventosFiltraPorSeveridad` pasaba igual sin el
+  filtro de severidad, porque el dato ya no estaba en la ventana. Desde el
+  17/09/2026 `NuevoPanel` recibe un `clock.Clock` y los tests usan
+  `relojDePrueba`, fijo. Para probar que un test no vence no hay que esperar la
+  fecha: se corre su binario con el reloj de pared corrido, interponiendo
+  `clock_gettime` con `DYLD_INSERT_LIBRARIES`.
 - **`ts` es `UNINDEXED` en la tabla FTS5 `logs`.** Una búsqueda sin texto es un
   scan completo. Con 800 000 filas se nota, y no está arreglado — y desde el
   26/08/2026 el tope de la vista llega a 25 000 líneas, así que pesa más.
