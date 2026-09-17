@@ -360,6 +360,11 @@ a tocarlos todos cada vez que se agrega una.
   que una caída de server-status más larga que la ventana no se coma los
   reinicios de ese lapso. La reproducción contra una copia real está en
   `TestReproduccionContraLaCopiaDeProduccion` (`SERVER_STATUS_COPIA`).
+  **Un cambio en la base o la ventana del detector no lo verifica la suite**:
+  los casos de la tabla salen de la misma cabeza que el código. Lo verifica el
+  replay en SQL sobre una copia (está en el plan del 17/09, «Lo medido»),
+  comparando vieja contra nueva y validando primero que la vieja reproduzca la
+  tabla `eventos` de producción.
 - **El VPS corre en `Etc/UTC`, así que `time.Local` allá es UTC.** El panel usó
   `.Local()` hasta el 22/08/2026 y mostraba UTC mientras uno lo leía como hora
   argentina. La zona sale de `zona` en la config y entra a `web.NuevoPanel`.

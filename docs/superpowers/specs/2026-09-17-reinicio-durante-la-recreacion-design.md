@@ -131,10 +131,14 @@ por SQLite**, porque los tests usaban tiempos sin fracción. Así que:
    las tres muestras de la tabla del §1, con `StartedAt` en **nanosegundos**
    (`14:47:52.509434637`, como lo devuelve Docker). Después, leer la base con
    la query nueva y correr el detector contra el tick de las 14:48. Tiene que
-   devolver el evento.
+   devolver el evento. Quedó como
+   `TestRecreadoConElInspectFallidoAvisaAlTickSiguiente`, en
+   `cmd/server-status`: cada tick pasa por `guardarContainersYDetectar`, así
+   que lee y escribe la base de SQLite igual que el ciclo.
 2. **Mutación:** volver `main.go` a `UltimoEstadoContainers()` (o la query a
    «último tick») tiene que poner ese test en rojo. Si queda verde, el test no
-   mide el bug.
+   mide el bug. Como la llamada se mudó a `guardarContainersYDetectar`
+   (`cmd/server-status/reinicios.go`), la mutación se aplica ahí.
 3. **Regresiones:** todo en cero, container nuevo, dos ceros seguidos, y un
    container visto por última vez hace más de 60 minutos. Tabla del §3.
 4. **Contra datos de producción:** tomar la copia de `status.db` que deja el
