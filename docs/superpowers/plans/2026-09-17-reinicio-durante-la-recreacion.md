@@ -1197,3 +1197,98 @@ de la ventana ya lo probó la Task 4.
 - Distinguir «recreado» de «reiniciado», ni avisar que un container desapareció
   (§5 del spec).
 - Arreglar `TestNovedadesOrdenaDeLoMasNuevoALoMasViejo`: hay una tarea aparte.
+
+---
+
+## Lo medido al ejecutarlo (17/09/2026)
+
+Tasks 0 a 6 ejecutadas el 17/09/2026; la 7 (push, PR, merge, deploy) queda
+esperando el ok de Juan. Todo lo de abajo se corrió en el worktree
+`.claude/worktrees/reinicio-en-recreacion`, rama `claude/reinicio-en-recreacion`.
+
+### Lo que el plan decía y resultó distinto
+
+- **El CI rojo conocido dejó de existir.** Mientras se ejecutaba, `main` avanzó
+  con el PR #27, que arregló `TestNovedadesOrdenaDeLoMasNuevoALoMasViejo`. Se
+  rebaseó la rama sobre `14ef9f6` (sin conflictos) y la suite entera quedó en
+  verde: `go test ./... -race -count=1` → 16 paquetes `ok`, ningún `FAIL`.
+- **El `grep` de la Task 2** esperaba `UltimoEstadoContainers` en el subcomando
+  `containers`. Ese subcomando le pregunta a Docker, no a la base: después del
+  refactor `main.go` no llama a `UltimoEstadoContainers` en ningún lado.
+- **Son 26 containers, no ~21.**
+- **Siete commits y no seis**: este apartado va en uno propio.
+
+### Reproducción contra la copia de producción
+
+Copia: `server-status backup` en el VPS a las 16:21 UTC, sha256 igual en el VPS
+y en la Mac, `PRAGMA integrity_check` = `ok`. Las filas de `supabase-auth` son
+las del §1 del spec (14:47 con health vacío y `started_at` = 0).
+
+```
+SERVER_STATUS_COPIA=<copia> go test ./cmd/server-status -race -count=1 -run TestReproduccionContraLaCopiaDeProduccion -v
+    reinicios_test.go:172: 14:48 supabase-auth arrancó 2026-09-17T14:47:52Z
+    reinicios_test.go:200: evento: tipo=container_restart ocurrido=2026-09-17T14:48:00Z detalle="1 container arrancó de nuevo: supabase-auth"
+--- PASS: TestReproduccionContraLaCopiaDeProduccion (4.00s)
+```
+
+### Mutaciones, sobre el árbol final
+
+| | Mutación | Cae |
+|---|---|---|
+| M1 | base → `UltimoEstadoContainers()` | `TestRecreado…` («a las 14:48 hubo 0 eventos»); tabla: `conocido, cero, nuevo`, `dos ceros`, `justo 60 minutos`; reproducción: «no dio el container_restart de supabase-auth» |
+| M2 | ventana `- 0 * ?` | `TestRecreado…`; tabla: los mismos tres; store: `SalteaElCero…` y `CuentaLaVentana…` |
+| M3 | ventana de 10 min | solo `visto hace justo 60 minutos todavía es base` |
+| M4 | ventana desde el reloj | `TestRecreado…`; tabla: `cero, nuevo`, `dos ceros`, `sin cero en el medio`, `justo 60`, `server-status caído`; store: `SalteaElCero…` y `CuentaLaVentana…` |
+| M5 | sin truncar al segundo | `TestRecreado…`: «14:47 avisó … supabase-kong» |
+
+### Barrido: la base vieja contra la nueva, sobre toda la historia
+
+La suite no verifica un cambio de base o de ventana, porque los casos salen de la
+misma cabeza que el código. Esto hace el replay del detector en SQL sobre la
+copia, abierta con `sqlite3 -readonly` y tablas temporales:
+
+```sql
+CREATE TEMP TABLE ticks AS SELECT ts, LAG(ts) OVER (ORDER BY ts) AS prev
+  FROM (SELECT DISTINCT ts FROM container_samples);
+CREATE TEMP TABLE cs AS SELECT ts, name, started_at AS sa FROM container_samples;
+CREATE UNIQUE INDEX temp.cs_nt ON cs(name, ts);
+-- vieja: la foto del tick anterior
+CREATE TEMP TABLE viejo AS SELECT r.ts, r.name FROM cs r
+  JOIN ticks t ON t.ts = r.ts JOIN cs p ON p.name = r.name AND p.ts = t.prev
+  WHERE r.sa > 0 AND p.sa > 0 AND r.sa > p.sa;
+-- nueva: el último conocido, visto dentro de los 3600 s que terminan en el tick anterior
+CREATE TEMP TABLE conocidos AS SELECT ts, name, sa, LAG(ts) OVER w AS kts, LAG(sa) OVER w AS ksa
+  FROM cs WHERE sa > 0 WINDOW w AS (PARTITION BY name ORDER BY ts);
+CREATE TEMP TABLE nuevo AS SELECT c.ts, c.name FROM conocidos c JOIN ticks t ON t.ts = c.ts
+  WHERE c.kts IS NOT NULL AND c.kts >= t.prev - 3600 AND c.sa > c.ksa;
+```
+
+Sobre 56 991 ticks (09/08 02:09 a 17/09 16:20 UTC) y 1 326 447 filas:
+
+- **El replay de la base vieja reproduce `eventos` exacto**: 8 pares
+  (container, tick) en 7 ticks, los mismos 7 `container_restart` que guardó
+  producción, en el mismo minuto y con los mismos nombres. Sin eso, el barrido no
+  probaría nada.
+- **Base nueva: 9 pares.** Vieja menos nueva: vacío. Nueva menos vieja: uno solo,
+  `supabase-auth` a las 14:48 del 17/09 (base vista a las 14:46, cero a las
+  14:47). Ningún aviso nuevo que no sea el que se perdió.
+- **Resultado negativo**: cero arranques con `started_at` mayor que el último
+  conocido que la base nueva siga sin avisar; cero `started_at` que vayan para
+  atrás. Lo único que no avisa son 26 primeras apariciones, todas containers
+  nuevos de verdad (el deploy de la migración 10 el 22/08, guacamole el 26/08,
+  `supabase-gym-imgproxy` y `supabase-gym-storage` el 05/09).
+- **Filas con `started_at = 0` desde la migración 10: una sola**, la de
+  `supabase-auth` a las 14:47 del 17/09.
+
+### Costo de la consulta, sobre la copia
+
+`EXPLAIN QUERY PLAN` → `SEARCH container_samples USING INDEX
+sqlite_autoindex_container_samples_1 (ts>?)`, con la subconsulta por `COVERING
+INDEX` y `TEMP B-TREE FOR GROUP BY`. `.timer on`: 1,3 ms sobre 1 326 447 filas,
+26 containers devueltos, todos del último tick.
+
+### Repo público
+
+Ninguna IPv4 en `git diff origin/main`. `gitleaks detect --log-opts=origin/main..HEAD`
+y `gitleaks dir .`: `no leaks found`. Autor y committer de los commits: el
+noreply; cero líneas de autoría de IA.
