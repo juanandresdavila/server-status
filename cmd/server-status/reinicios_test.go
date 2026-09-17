@@ -1,11 +1,16 @@
 package main
 
 import (
+	"database/sql"
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/juanandresdavila/server-status/internal/model"
+	"github.com/juanandresdavila/server-status/internal/rules"
 	"github.com/juanandresdavila/server-status/internal/store"
 )
 
@@ -127,4 +132,139 @@ func TestLaBaseDeLosReiniciosEsElUltimoArranqueConocido(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Reproduce el tick de las 14:48 UTC del 17/09/2026 contra una copia de la
+// base de producción, la que deja `server-status backup`. La copia no entra al
+// repo, así que sin SERVER_STATUS_COPIA el test se saltea:
+//
+//	SERVER_STATUS_COPIA=/ruta/status.db go test ./cmd/server-status -run TestReproduccion -v
+//
+// Arma dos copias de trabajo: una cortada en el minuto de las 14:48, de donde
+// sale lo que vio ese tick, y otra cortada en el de las 14:47, que es la base
+// tal como estaba justo antes. Sobre la segunda corre el mismo camino que el
+// ciclo del minuto. El archivo original no se toca.
+func TestReproduccionContraLaCopiaDeProduccion(t *testing.T) {
+	origen := os.Getenv("SERVER_STATUS_COPIA")
+	if origen == "" {
+		t.Skip("sin SERVER_STATUS_COPIA: la reproducción necesita una copia de la base de producción")
+	}
+	t1447 := time.Date(2026, 9, 17, 14, 47, 0, 0, time.UTC)
+	t1448 := t1447.Add(time.Minute)
+
+	// Lo que vio el tick de las 14:48.
+	hasta1448 := copiaHasta(t, origen, t1448)
+	despues, err := hasta1448.UltimoEstadoContainers()
+	if err != nil {
+		t.Fatalf("UltimoEstadoContainers: %v", err)
+	}
+	hostAhora, _, err := hasta1448.UltimaHostSample()
+	if err != nil {
+		t.Fatalf("UltimaHostSample: %v", err)
+	}
+	if !hostAhora.TS.Equal(t1448) {
+		t.Fatalf("la copia no tiene el tick de las 14:48: el último es %v", hostAhora.TS)
+	}
+	auth, ok := buscarContainer(despues, "supabase-auth")
+	if !ok || auth.StartedAt.IsZero() {
+		t.Fatalf("a las 14:48 supabase-auth = %+v, quería su arranque nuevo", auth)
+	}
+	t.Logf("14:48 supabase-auth arrancó %s", auth.StartedAt.Format(time.RFC3339))
+
+	// La base justo antes de ese tick.
+	hasta1447 := copiaHasta(t, origen, t1447)
+	previo, err := hasta1447.UltimoEstadoContainers()
+	if err != nil {
+		t.Fatalf("UltimoEstadoContainers: %v", err)
+	}
+	hostAntes, _, err := hasta1447.UltimaHostSample()
+	if err != nil {
+		t.Fatalf("UltimaHostSample: %v", err)
+	}
+
+	// Sin el cero, esta copia no reproduce el bug y el test no prueba nada.
+	if a, ok := buscarContainer(previo, "supabase-auth"); !ok || !a.StartedAt.IsZero() {
+		t.Fatalf("a las 14:47 supabase-auth = %+v, quería started_at en cero", a)
+	}
+
+	// Con la base de antes del arreglo no sale: es el bug, sobre datos reales.
+	for _, ev := range rules.DetectarEventos(hostAntes, hostAhora, previo, despues, t1448) {
+		if strings.Contains(ev.Detalle, "supabase-auth") {
+			t.Fatalf("la base vieja ya avisaba (%q): la copia no reproduce el bug", ev.Detalle)
+		}
+	}
+
+	var encontrado *model.Evento
+	evs := guardarContainersYDetectar(hasta1447, hostAntes, hostAhora, despues, t1448)
+	for i := range evs {
+		t.Logf("evento: tipo=%s ocurrido=%s detalle=%q",
+			evs[i].Tipo, evs[i].OcurridoEn.UTC().Format(time.RFC3339), evs[i].Detalle)
+		if evs[i].Tipo == "container_restart" && strings.Contains(evs[i].Detalle, "supabase-auth") {
+			encontrado = &evs[i]
+		}
+	}
+	if encontrado == nil {
+		t.Fatal("el tick de las 14:48 no dio el container_restart de supabase-auth")
+	}
+	if !encontrado.OcurridoEn.Equal(t1448) {
+		t.Errorf("ocurrido en %v, quería %v", encontrado.OcurridoEn, t1448)
+	}
+}
+
+// copiaHasta copia la base a un directorio temporal y la corta al final del
+// minuto dado, como estaba cuando terminó ese tick. El ts de host y de
+// containers se guarda truncado al minuto, así que `ts > minuto` es todo lo
+// posterior.
+func copiaHasta(t *testing.T, origen string, minuto time.Time) *store.Store {
+	t.Helper()
+	destino := filepath.Join(t.TempDir(), "status.db")
+	copiarArchivo(t, origen, destino)
+
+	db, err := sql.Open("sqlite", destino)
+	if err != nil {
+		t.Fatalf("abrir la copia: %v", err)
+	}
+	for _, tabla := range []string{"container_samples", "host_samples"} {
+		if _, err := db.Exec(`DELETE FROM `+tabla+` WHERE ts > ?`, minuto.Unix()); err != nil {
+			t.Fatalf("recortar %s: %v", tabla, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("cerrar la copia: %v", err)
+	}
+
+	s, err := store.Open(destino)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+func copiarArchivo(t *testing.T, origen, destino string) {
+	t.Helper()
+	in, err := os.Open(origen)
+	if err != nil {
+		t.Fatalf("abrir %s: %v", origen, err)
+	}
+	defer in.Close()
+	out, err := os.Create(destino)
+	if err != nil {
+		t.Fatalf("crear %s: %v", destino, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		t.Fatalf("copiar: %v", err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatalf("cerrar %s: %v", destino, err)
+	}
+}
+
+func buscarContainer(cs []model.ContainerSample, nombre string) (model.ContainerSample, bool) {
+	for _, c := range cs {
+		if c.Name == nombre {
+			return c, true
+		}
+	}
+	return model.ContainerSample{}, false
 }
