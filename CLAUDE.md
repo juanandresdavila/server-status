@@ -350,6 +350,16 @@ a tocarlos todos cada vez que se agrega una.
   truncada al segundo. **Es la misma trampa que la del cursor de logs**, que está
   tres puntos más abajo y se resolvió al revés (guardando nanosegundos); si
   aparece un campo de tiempo nuevo, elegir una de las dos y dejarlo escrito.
+- **`started_at = 0` no es solo «fila vieja»: también es «el Inspect falló».**
+  Y el Inspect falla justo cuando un container se recrea: el listado trae el
+  viejo, se pide su detalle y compose ya lo borró (404). El 17/09/2026 eso dejó
+  a `supabase-auth` sin evento ni aviso, porque el detector comparaba contra la
+  foto del minuto anterior, que era ese cero. Desde entonces la base es
+  `UltimoArranqueConocido`: el último `started_at` distinto de cero dentro de
+  **60 minutos contados desde el último tick guardado, no desde el reloj**, para
+  que una caída de server-status más larga que la ventana no se coma los
+  reinicios de ese lapso. La reproducción contra una copia real está en
+  `TestReproduccionContraLaCopiaDeProduccion` (`SERVER_STATUS_COPIA`).
 - **El VPS corre en `Etc/UTC`, así que `time.Local` allá es UTC.** El panel usó
   `.Local()` hasta el 22/08/2026 y mostraba UTC mientras uno lo leía como hora
   argentina. La zona sale de `zona` en la config y entra a `web.NuevoPanel`.
