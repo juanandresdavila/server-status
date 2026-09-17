@@ -293,11 +293,6 @@ func correr(cfg config.Config, col *host.Collector) error {
 			if err != nil {
 				slog.Error("no se pudo leer la muestra anterior", "err", err)
 			}
-			contAntes, err := s.UltimoEstadoContainers()
-			if err != nil {
-				slog.Error("no se pudo leer el estado anterior de los containers", "err", err)
-			}
-
 			if err := s.InsertHostSample(m); err != nil {
 				slog.Error("no se pudo guardar la muestra", "err", err)
 			}
@@ -315,14 +310,10 @@ func correr(cfg config.Config, col *host.Collector) error {
 					CPUPct: c.CPUPct, MemBytes: c.MemBytes,
 				})
 			}
-			if err := s.InsertContainerSamples(ms); err != nil {
-				slog.Error("no se pudieron guardar los containers", "err", err)
-			}
-
 			// Eventos discretos: reinicios. El motor de reglas no los ve porque
 			// solo sabe de estados sostenidos —tres muestras malas seguidas— y
 			// un reinicio dura segundos. El del host del 22/08 duró 18.
-			for _, ev := range rules.DetectarEventos(hostAntes, m, contAntes, ms, clock.Real{}.Now()) {
+			for _, ev := range guardarContainersYDetectar(s, hostAntes, m, ms, clock.Real{}.Now()) {
 				id, err := s.GuardarEvento(ev)
 				if err != nil {
 					slog.Error("no se pudo guardar el evento", "tipo", ev.Tipo, "err", err)
