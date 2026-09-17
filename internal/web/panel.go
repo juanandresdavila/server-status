@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/juanandresdavila/server-status/internal/clock"
 	"github.com/juanandresdavila/server-status/internal/logs"
 	"github.com/juanandresdavila/server-status/internal/model"
 )
@@ -153,7 +154,11 @@ func enZona(t time.Time, loc *time.Location) time.Time {
 // argentina, y los campos desde/hasta interpretaban lo tecleado como UTC —
 // tres horas de corrimiento sobre lo que uno quiso pedir, sin nada que lo
 // indicara. Sale de la config, la misma zona que usa el resumen diario.
-func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
+//
+// El reloj viene de afuera por la invariante 5. Con time.Now() adentro, la
+// ventana de /events se corría con el calendario y los tests, que tienen datos
+// con fecha fija, vencían solos.
+func NuevoPanel(d Datos, zona *time.Location, clk clock.Clock, enlaces ...Enlace) http.Handler {
 	if zona == nil {
 		zona = time.UTC
 	}
@@ -196,7 +201,7 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 	mux.HandleFunc("GET /logs/export", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		idioma := idiomaDe(w, r)
-		v := ventanaDe(r, time.Now(), zona)
+		v := ventanaDe(r, clk.Now(), zona)
 		niveles := nivelesDe(r)
 
 		tope := max(limiteDe(r), topeExport)
@@ -241,7 +246,7 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 	mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		idioma := idiomaDe(w, r)
-		v := ventanaDe(r, time.Now(), zona)
+		v := ventanaDe(r, clk.Now(), zona)
 		niveles := nivelesDe(r)
 
 		limite := limiteDe(r)
@@ -384,7 +389,7 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 	// buscarlos a mano con el filtro puesto.
 	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
 		idioma := idiomaDe(w, r)
-		v := ventanaDe(r, time.Now(), zona)
+		v := ventanaDe(r, clk.Now(), zona)
 		sevs := severidadesValidas(r.URL.Query()["sev"])
 
 		incidentes, err := d.UltimosIncidentes(200)
@@ -444,7 +449,7 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 				http.Error(w, "id inválido", http.StatusBadRequest)
 				return
 			}
-			if err := aplicar(id, time.Now()); err != nil {
+			if err := aplicar(id, clk.Now()); err != nil {
 				slog.Error("no se pudo "+nombre+" el incidente", "id", id, "err", err)
 				http.Error(w, "no se pudo "+nombre, http.StatusInternalServerError)
 				return
@@ -577,7 +582,7 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 		// la única conexión a SQLite. Ver CrearReglaNivel en el store.
 		id, filas, err := d.CrearReglaNivel(model.ReglaNivel{
 			Patron: patron, Container: r.FormValue("container"), Nivel: nivel,
-			Motivo: motivo, Creada: time.Now(),
+			Motivo: motivo, Creada: clk.Now(),
 		})
 		if err != nil {
 			slog.Error("no se pudo crear la regla de nivel", "patron", patron, "err", err)
@@ -601,7 +606,7 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 
 	mux.HandleFunc("GET /api/series", func(w http.ResponseWriter, r *http.Request) {
 		horas := horasDe(r)
-		hasta := time.Now()
+		hasta := clk.Now()
 		muestras, err := d.SerieHost(hasta.Add(-time.Duration(horas)*time.Hour), hasta)
 		if err != nil {
 			http.Error(w, "no se pudo leer la serie", http.StatusInternalServerError)
@@ -690,7 +695,7 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 		// Los reinicios de la MISMA ventana que eligió el select de arriba: la
 		// pregunta "¿esto se reinició hoy?" no se contesta con un contador que
 		// arranca en el arranque del container y se resetea al recrearlo.
-		hasta := time.Now()
+		hasta := clk.Now()
 		if v.Reinicios, err = d.ReiniciosEntre(hasta.Add(-time.Duration(v.Horas)*time.Hour), hasta); err != nil {
 			// No es motivo para tirar el panel entero abajo: sin el mapa la
 			// columna muestra cero, que es lo mismo que mostraba antes.
@@ -729,7 +734,7 @@ func NuevoPanel(d Datos, zona *time.Location, enlaces ...Enlace) http.Handler {
 // Ventana es el rango de tiempo pedido, ya resuelto.
 //
 // desde/hasta explícitos le ganan al ?horas=, que queda como atajo. Antes solo
-// existía el atajo, anclado siempre a time.Now(): no había forma de mirar una
+// existía el atajo, anclado siempre a ahora: no había forma de mirar una
 // franja del pasado, que es justo lo que hace falta cuando algo ya pasó.
 type Ventana struct {
 	Desde, Hasta time.Time
