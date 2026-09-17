@@ -199,7 +199,7 @@ func correr(cfg config.Config, col *host.Collector) error {
 		for _, e := range cfg.Enlaces {
 			enlaces = append(enlaces, web.Enlace{Nombre: e.Nombre, URL: e.URL})
 		}
-		mux.Handle("/", web.NuevoPanel(s, loc, enlaces...))
+		mux.Handle("/", web.NuevoPanel(s, loc, clock.Real{}, enlaces...))
 		go func() {
 			if err := web.Escuchar(cfg.PanelAddr, mux, 2*time.Minute); err != nil {
 				slog.Error("el panel no pudo levantar", "err", err)

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/juanandresdavila/server-status/internal/clock"
 	"github.com/juanandresdavila/server-status/internal/model"
 	"github.com/juanandresdavila/server-status/internal/web"
 )
@@ -24,6 +25,12 @@ var zonaDePrueba = func() *time.Location {
 	}
 	return l
 }()
+
+// Los datos falsos tienen fechas fijas, del 09/08 al 31/08/2026, y /events las
+// filtra por la ventana pedida. Con el reloj real esa ventana se fue corriendo
+// sola: el 08/09/2026 el error de log del 09/08 quedó fuera de las 720 h y el CI
+// quedó en rojo sin que se hubiera roto nada del panel. Este reloj no avanza.
+var relojDePrueba clock.Clock = clock.NewFake(time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC))
 
 type datosFalsos struct{}
 
@@ -158,7 +165,7 @@ func (datosFalsos) EventosEntre(desde, hasta time.Time, limite int) ([]model.Eve
 // El export baja lo mismo que muestra la vista, pero como archivo de texto
 // plano: es la forma de llevarse los logs de un container a otra herramienta.
 func TestExportDeLogsDescargaTextoPlano(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs/export?container=comm-tool&horas=6", nil))
 
@@ -183,7 +190,7 @@ func TestExportDeLogsDescargaTextoPlano(t *testing.T) {
 // Sin container el archivo se llama "todos": el filtro vacío es válido en la
 // vista y el export tiene que aceptar lo mismo que ella.
 func TestExportDeLogsSinContainer(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs/export", nil))
 
@@ -198,7 +205,7 @@ func TestExportDeLogsSinContainer(t *testing.T) {
 // La vista de logs ofrece el export: un endpoint que solo se conoce por la
 // documentación es un endpoint que no se usa.
 func TestLaVistaDeLogsOfreceElExport(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs?container=comm-tool", nil))
 
@@ -227,7 +234,7 @@ func TestTailSinContainerNoRenderiza(t *testing.T) {
 func pedir(t *testing.T, ruta string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	web.NuevoPanel(datosFalsos{}, zonaDePrueba).ServeHTTP(rec, httptest.NewRequest("GET", ruta, nil))
+	web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba).ServeHTTP(rec, httptest.NewRequest("GET", ruta, nil))
 	return rec
 }
 
@@ -422,7 +429,7 @@ func TestEChartsSeSirveDesdeElBinario(t *testing.T) {
 // La vista que faltaba: el reinicio del 22/08 estaba en la base y no había
 // ninguna pantalla donde se viera.
 func TestVistaEventosMuestraElReinicio(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/events?horas=720", nil))
 
@@ -448,7 +455,7 @@ func TestVistaEventosFiltraPorSeveridad(t *testing.T) {
 		t.Error("el reboot es critical y tenía que estar")
 	}
 
-	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba)
 	w := httptest.NewRecorder()
 	// Los errores de log son warning: pidiendo solo críticos no van.
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/events?horas=720&sev=critical", nil))
@@ -462,7 +469,7 @@ func TestVistaEventosFiltraPorSeveridad(t *testing.T) {
 }
 
 func TestNovedadesOrdenaDeLoMasNuevoALoMasViejo(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/events?horas=720", nil))
 
@@ -492,7 +499,7 @@ func TestElRangoSeInterpretaEnLaZonaConfigurada(t *testing.T) {
 	}
 
 	var visto struct{ desde, hasta time.Time }
-	h := web.NuevoPanel(espia{cb: func(d, ha time.Time) { visto.desde, visto.hasta = d, ha }}, tokio)
+	h := web.NuevoPanel(espia{cb: func(d, ha time.Time) { visto.desde, visto.hasta = d, ha }}, tokio, relojDePrueba)
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET",
@@ -509,7 +516,7 @@ func TestElRangoSeInterpretaEnLaZonaConfigurada(t *testing.T) {
 
 // Y lo que se muestra también va en esa zona, no en la del proceso.
 func TestLasHorasSeMuestranEnLaZonaConfigurada(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/events?horas=720", nil))
 
@@ -529,7 +536,7 @@ func TestLoQueSeMuestraNoSaleDeTimeLocal(t *testing.T) {
 	if err != nil {
 		t.Skip("sin tzdata para Asia/Tokyo")
 	}
-	h := web.NuevoPanel(datosFalsos{}, tokio)
+	h := web.NuevoPanel(datosFalsos{}, tokio, relojDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/events?horas=720", nil))
 
@@ -558,7 +565,7 @@ func TestElPanelEsBilingue(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: "lang", Value: "en"})
 	w := httptest.NewRecorder()
-	web.NuevoPanel(datosFalsos{}, zonaDePrueba).ServeHTTP(w, req)
+	web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba).ServeHTTP(w, req)
 	if !strings.Contains(w.Body.String(), "Services") {
 		t.Error("la cookie lang=en no aplica")
 	}
@@ -567,7 +574,7 @@ func TestElPanelEsBilingue(t *testing.T) {
 	req = httptest.NewRequest("GET", "/events?horas=720", nil)
 	req.AddCookie(&http.Cookie{Name: "lang", Value: "en"})
 	w = httptest.NewRecorder()
-	web.NuevoPanel(datosFalsos{}, zonaDePrueba).ServeHTTP(w, req)
+	web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba).ServeHTTP(w, req)
 	if !strings.Contains(w.Body.String(), "the server rebooted") {
 		t.Error("los títulos de eventos no se traducen")
 	}
@@ -593,7 +600,7 @@ func TestResolverYArchivarIncidentes(t *testing.T) {
 		cerrar:   func(id int64) { cerrado = id },
 		archivar: func(id int64) { archivado = id },
 	}
-	h := web.NuevoPanel(d, zonaDePrueba)
+	h := web.NuevoPanel(d, zonaDePrueba, relojDePrueba)
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("POST", "/incidents/7/resolve", nil))
@@ -732,7 +739,7 @@ func TestLasFechasLlevanDiaMesYAnio(t *testing.T) {
 // prendido no se puede decir con un piso.
 func TestElFiltroDeNivelEsPorConjunto(t *testing.T) {
 	var visto []string
-	h := web.NuevoPanel(espiaNiveles{cb: func(ns []string) { visto = ns }}, zonaDePrueba)
+	h := web.NuevoPanel(espiaNiveles{cb: func(ns []string) { visto = ns }}, zonaDePrueba, relojDePrueba)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/logs?nivel=TRACE&nivel=ERROR", nil))
 
@@ -797,7 +804,7 @@ func TestElTopeElegidoLlegaAlStore(t *testing.T) {
 	}
 	for _, c := range casos {
 		var visto int
-		h := web.NuevoPanel(espiaLimite{cb: func(n int) { visto = n }}, zonaDePrueba)
+		h := web.NuevoPanel(espiaLimite{cb: func(n int) { visto = n }}, zonaDePrueba, relojDePrueba)
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", c.ruta, nil))
 		if visto != c.quiero {
 			t.Errorf("%s: tope %d, quería %d", c.ruta, visto, c.quiero)
@@ -809,7 +816,7 @@ func TestElTopeElegidoLlegaAlStore(t *testing.T) {
 // se abre en otro lado y aguanta más que un navegador renderizando divs.
 func TestElExportNoBajaDeSuPiso(t *testing.T) {
 	var visto int
-	h := web.NuevoPanel(espiaLimite{cb: func(n int) { visto = n }}, zonaDePrueba)
+	h := web.NuevoPanel(espiaLimite{cb: func(n int) { visto = n }}, zonaDePrueba, relojDePrueba)
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/logs/export?limite=5000", nil))
 	if visto != 10000 {
 		t.Errorf("tope del export = %d, quería 10000", visto)
@@ -916,7 +923,7 @@ func TestLasAccionesVuelvenADondeEstabas(t *testing.T) {
 		{"rechaza una URL absoluta", "https://jadd.com.ar/robo", "/"},
 	}
 	for _, c := range casos {
-		h := web.NuevoPanel(datosFalsos{}, zonaDePrueba)
+		h := web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba)
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/incidents/2/archive",
 			strings.NewReader("volver="+url.QueryEscape(c.volver)))
@@ -980,7 +987,7 @@ func TestLaCargaDiceAQueIntervalosYContraCuantosNucleos(t *testing.T) {
 // habla con el socket de Docker. El nav las ofrece como enlaces externos, y la
 // URL sale de la config porque lleva la IP de tailnet.
 func TestElNavOfreceLosEnlacesExternos(t *testing.T) {
-	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba,
+	h := web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba,
 		web.Enlace{Nombre: "terminal", URL: "https://ejemplo.invalid:9090"})
 
 	for _, ruta := range []string{"/", "/logs", "/events"} {
@@ -1033,7 +1040,7 @@ func (e *espiaReglas) BorrarReglaNivel(id int64) (int, error) {
 func TestLaPaginaDeReglaNuevaSePrellenaDesdeLaLinea(t *testing.T) {
 	e := &espiaReglas{}
 	rec := httptest.NewRecorder()
-	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec,
+	web.NuevoPanel(e, zonaDePrueba, relojDePrueba).ServeHTTP(rec,
 		httptest.NewRequest("GET", "/logs/reglas/nueva?rowid=99&volver=%2Flogs%3Fhoras%3D6", nil))
 
 	if rec.Code != 200 {
@@ -1060,7 +1067,7 @@ func TestLaPaginaDeReglaNuevaSePrellenaDesdeLaLinea(t *testing.T) {
 func TestRecalcularUsaElPatronEditado(t *testing.T) {
 	e := &espiaReglas{}
 	rec := httptest.NewRecorder()
-	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec,
+	web.NuevoPanel(e, zonaDePrueba, relojDePrueba).ServeHTTP(rec,
 		httptest.NewRequest("GET", "/logs/reglas/nueva?patron=egress-probe&container=&nivel=TRACE&motivo=x", nil))
 
 	if rec.Code != 200 {
@@ -1074,7 +1081,7 @@ func TestRecalcularUsaElPatronEditado(t *testing.T) {
 // Una línea que la retención ya se llevó no es un 500 ni una página a medias.
 func TestReglaNuevaConUnaLineaQueYaNoEsta(t *testing.T) {
 	rec := httptest.NewRecorder()
-	web.NuevoPanel(datosFalsos{}, zonaDePrueba).ServeHTTP(rec,
+	web.NuevoPanel(datosFalsos{}, zonaDePrueba, relojDePrueba).ServeHTTP(rec,
 		httptest.NewRequest("GET", "/logs/reglas/nueva?rowid=12345", nil))
 	if rec.Code != 404 {
 		t.Errorf("código = %d, quería 404", rec.Code)
@@ -1087,7 +1094,7 @@ func TestCrearUnaReglaYVolver(t *testing.T) {
 	req := httptest.NewRequest("POST", "/logs/reglas", strings.NewReader(
 		"patron=egress-probe&container=supabase-kong&nivel=TRACE&motivo=sonda+propia&volver=%2Flogs%3Fhoras%3D6"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec, req)
+	web.NuevoPanel(e, zonaDePrueba, relojDePrueba).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("código = %d, quería 303", rec.Code)
@@ -1118,7 +1125,7 @@ func TestUnaReglaIncompletaNoSeCrea(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/logs/reglas", strings.NewReader(c.cuerpo))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec, req)
+		web.NuevoPanel(e, zonaDePrueba, relojDePrueba).ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: código = %d, quería 400", c.nombre, rec.Code)
@@ -1154,7 +1161,7 @@ func TestBorrarUnaReglaDesdeElPanel(t *testing.T) {
 	req := httptest.NewRequest("POST", "/logs/reglas/3/borrar",
 		strings.NewReader("volver=%2Flogs%2Freglas"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec, req)
+	web.NuevoPanel(e, zonaDePrueba, relojDePrueba).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusSeeOther || e.borrada != 3 {
 		t.Fatalf("código=%d borrada=%d, quería 303 y 3", rec.Code, e.borrada)
@@ -1169,14 +1176,14 @@ func TestBorrarUnaReglaDesdeElPanel(t *testing.T) {
 	req = httptest.NewRequest("POST", "/logs/reglas/3/borrar",
 		strings.NewReader("volver=%2F%2Fjadd.com.ar%2Frobo"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec, req)
+	web.NuevoPanel(e, zonaDePrueba, relojDePrueba).ServeHTTP(rec, req)
 	if loc := rec.Header().Get("Location"); loc != "/" {
 		t.Errorf("Location = %q, quería /", loc)
 	}
 
 	// Un id que no es número es un 400, no un panic.
 	rec = httptest.NewRecorder()
-	web.NuevoPanel(e, zonaDePrueba).ServeHTTP(rec,
+	web.NuevoPanel(e, zonaDePrueba, relojDePrueba).ServeHTTP(rec,
 		httptest.NewRequest("POST", "/logs/reglas/basura/borrar", nil))
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("id inválido: código = %d, quería 400", rec.Code)
@@ -1212,5 +1219,84 @@ func TestLosTextosDeReglasEstanEnLosDosIdiomas(t *testing.T) {
 	}
 	if cuerpo := pedir(t, "/logs?lang=en").Body.String(); !strings.Contains(cuerpo, "active rules: 1") {
 		t.Error("el aviso del encabezado no se traduce")
+	}
+}
+
+// ── El reloj del panel (17/09/2026) ─────────────────────────────────────────
+
+// espiaReloj registra qué hora le llegó a cada consulta —el final de la ventana,
+// o el momento de la acción— y delega el resto en datosFalsos.
+type espiaReloj struct {
+	datosFalsos
+	visto map[string]time.Time
+}
+
+func (e espiaReloj) BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
+	e.visto["BuscarLogs"] = hasta
+	return e.datosFalsos.BuscarLogs(texto, container, niveles, desde, hasta, limite)
+}
+
+func (e espiaReloj) EventosEntre(desde, hasta time.Time, limite int) ([]model.Evento, error) {
+	e.visto["EventosEntre"] = hasta
+	return e.datosFalsos.EventosEntre(desde, hasta, limite)
+}
+
+func (e espiaReloj) SerieHost(desde, hasta time.Time) ([]model.HostSample, error) {
+	e.visto["SerieHost"] = hasta
+	return e.datosFalsos.SerieHost(desde, hasta)
+}
+
+func (e espiaReloj) ReiniciosEntre(desde, hasta time.Time) (map[string]int, error) {
+	e.visto["ReiniciosEntre"] = hasta
+	return e.datosFalsos.ReiniciosEntre(desde, hasta)
+}
+
+func (e espiaReloj) CerrarIncidente(id int64, cuando time.Time) error {
+	e.visto["CerrarIncidente"] = cuando
+	return nil
+}
+
+func (e espiaReloj) ArchivarIncidente(id int64, cuando time.Time) error {
+	e.visto["ArchivarIncidente"] = cuando
+	return nil
+}
+
+func (e espiaReloj) CrearReglaNivel(r model.ReglaNivel) (int64, int, error) {
+	e.visto["CrearReglaNivel"] = r.Creada
+	return e.datosFalsos.CrearReglaNivel(r)
+}
+
+// Todo lo que el panel fecha sale del reloj que recibe, no de time.Now(): es la
+// invariante 5. El panel la rompía, y por eso los tests de /events tenían fecha
+// de vencimiento. Este test no depende del día en que se corra: con time.Now()
+// de vuelta en cualquier handler, la hora que llega no es la del reloj de prueba.
+func TestElPanelTomaLaHoraDelRelojQueRecibe(t *testing.T) {
+	ahora := relojDePrueba.Now()
+	casos := []struct{ metodo, ruta, consulta string }{
+		{"GET", "/events?horas=6", "EventosEntre"},
+		{"GET", "/logs?horas=6", "BuscarLogs"},
+		{"GET", "/logs/export?horas=6", "BuscarLogs"},
+		{"GET", "/api/series?horas=6", "SerieHost"},
+		{"GET", "/?horas=6", "ReiniciosEntre"},
+		{"POST", "/incidents/1/resolve", "CerrarIncidente"},
+		{"POST", "/incidents/2/archive", "ArchivarIncidente"},
+		{"POST", "/logs/reglas", "CrearReglaNivel"},
+	}
+	for _, c := range casos {
+		e := espiaReloj{visto: map[string]time.Time{}}
+		req := httptest.NewRequest(c.metodo, c.ruta,
+			strings.NewReader("patron=egress-probe&nivel=TRACE&motivo=sonda+propia"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		web.NuevoPanel(e, zonaDePrueba, relojDePrueba).ServeHTTP(httptest.NewRecorder(), req)
+
+		got, llamo := e.visto[c.consulta]
+		if !llamo {
+			t.Errorf("%s %s: no llegó a %s", c.metodo, c.ruta, c.consulta)
+			continue
+		}
+		if !got.Equal(ahora) {
+			t.Errorf("%s %s: %s recibió %s, quería %s, la hora del reloj del panel",
+				c.metodo, c.ruta, c.consulta, got.UTC(), ahora.UTC())
+		}
 	}
 }
