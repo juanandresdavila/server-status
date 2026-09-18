@@ -127,25 +127,35 @@ a pagarlo con el próximo container ruidoso.
   algo del visor; no puede callarte un aviso de Telegram. Ese límite es lo que
   hace que la función sea tolerable.
 
-**Medición de egress IPv4 vs IPv6 (26/08/2026) — EN CURSO.** El 26/08 los
-probes salientes saltaron a **23 resets** contra una base de **0,31/día**.
-Todas las fallas de red del histórico son por IPv6, pero eso no prueba nada: el
-VPS sale siempre por IPv6 y **nunca se intentó por IPv4**, así que no hay
-contrafactual. `cmd/egress-probe` lo construye — factorial 2×2 de familia ×
-reuso de conexión, más un brazo de cadencia de 30 s.
+**Medición de egress IPv4 vs IPv6 (26/08/2026) — CON VEREDICTO, la unit sigue
+corriendo.** El 26/08 los probes salientes saltaron a **23 resets** contra una
+base de **0,31/día**. Todas las fallas de red del histórico son por IPv6, pero
+eso no prueba nada: el VPS sale siempre por IPv6 y **nunca se intentó por
+IPv4**, así que no hay contrafactual. `cmd/egress-probe` lo construye —
+factorial 2×2 de familia × reuso de conexión, más un brazo de cadencia de 30 s.
 
 - Plan y **regla de decisión pre-registrada** (escrita antes de los datos):
   `docs/superpowers/plans/2026-08-26-egress-ipv6-vs-ipv4.md`. La regla se aplica
   sola: `egress-probe -analizar <jsonl>`.
-- **Producción no se toca y ES el control positivo**: si `probe_results` registra
-  resets en la ventana y el brazo `v6-ka` no, el instrumento no es fiel y no hay
-  conclusión sobre la red.
+- **Veredicto, leído el 18/09/2026** sobre 33 000 ticks por brazo: **`h1-y-h2`**.
+  Separan los dos ejes, y el reuso con mucha más fuerza que la familia (reuso
+  p=1,2e-36, familia p=0,00012). Por tick fallan el 0,43 % de `v6-ka` y el
+  0,20 % de `v4-ka`, contra el 0,01 % de `v6-fresh` y el 0,06 % de `v4-fresh`.
+  De la acción que la tabla del plan pide para ese caso («`tcp4` y revisar el
+  reuso») se hizo **solo la parte del reuso**, el 18/09: el prober confirma por
+  una conexión nueva toda falla sobre una reusada (ver «Gotchas»). El `tcp4` no
+  se aplicó.
+- **Producción ya no es el control positivo.** Lo fue hasta el 18/09: desde ese
+  cambio, un reset sobre una conexión reusada ya no llega a `probe_results`
+  (queda solo como WARN en el journal), así que la comparación contra `v6-ka`
+  dejó de tener sentido.
 - Corre como unit **aparte** (`deploy/egress-probe.service`, `make
-  egress-deploy`), salida en `/var/lib/egress-probe/medicion.jsonl`. **Es
-  temporal: sacar la unit cuando cierre la medición.**
-- 🚨 **El cambio de código va DESPUÉS de la medición.** Si el resultado es el
-  reuso de conexiones y no la familia, forzar `tcp4` "funcionaría" igual —por
-  accidente, al reiniciar el pool— dejando la causa intacta.
+  egress-deploy`), salida en `/var/lib/egress-probe/medicion.jsonl` (281 MB al
+  18/09, no lo respalda nadie). **Es temporal: falta sacar la unit**, y bajar
+  el JSONL antes si se lo quiere conservar.
+- 🚨 **El cambio de código iba DESPUÉS de la medición**, y así se hizo: si el
+  resultado hubiera sido solo el reuso, forzar `tcp4` habría "funcionado"
+  igual —por accidente, al reiniciar el pool— dejando la causa intacta.
 
 ## Required reading
 
@@ -397,6 +407,24 @@ a tocarlos todos cada vez que se agrega una.
   de study-master vuelca 33 líneas de SQL por minuto: 582 757 de las 802 200
   filas guardadas (73 %). Por eso un export de "24 h" cubría 4 h 54 m. Los
   niveles lo mitigan —ese volcado es TRACE— pero la causa está en el otro repo.
+- **Una conexión reusada se puede quedar muda con el servicio sano.** El
+  18/09/2026 el probe de comm-tool dio timeout de 10 s cuatro minutos seguidos
+  y abrió un incidente crítico: el access log de Caddy no tiene NINGÚN pedido
+  de server-status en esa ventana, mientras `egress-probe`, desde el mismo VPS y
+  al mismo host, pasó en todos sus brazos. El incidente de workshop del
+  01/09/2026 tiene la misma firma contra `egress-probe`. La conexión HTTP/2 del
+  pool quedó colgada (sin RST) y Go la siguió usando: con probes cada 60 s y
+  timeout de 10 s nunca llega a los 90 s de `IdleConnTimeout`, así que no se
+  descarta sola. Encima el aviso de comm-tool viajaba por esa misma conexión,
+  porque el prober y el notificador compartían el `http.DefaultTransport`, y
+  también se colgó: salió por el respaldo de Telegram. Desde entonces el
+  prober tiene **un pool por servicio**, y una falla sin respuesta HTTP sobre
+  una conexión **reusada** tira ese pool y se reintenta **una vez** por una
+  nueva (`internal/prober`). Una falla sobre una conexión que ya era nueva no se
+  reintenta, y un 5xx tampoco. Cada reintento deja un WARN `probe: falló sobre
+  una conexión reusada` en el journal: es el único rastro, porque a
+  `probe_results` llega solo el segundo intento. El canal de comm-tool lleva
+  su propio `Transport`. Peor caso de un probe: dos veces `ProbeTimeout`.
 
 ## Este repo es público
 
