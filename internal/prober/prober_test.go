@@ -368,3 +368,63 @@ func TestProbesEnParaleloSobreElMismoProber(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// El pool es por servicio: renovar el de uno no le puede cerrar las conexiones
+// a los otros. Si todos compartieran pool, la conexión trabada de un servicio
+// mandaría a los demás a rehacer handshake cada vez que se renueva.
+func TestRenovarUnServicioNoLeTocaElPoolDeOtro(t *testing.T) {
+	sc := nuevoServidorColgable(t)
+	p := sc.prober(500 * time.Millisecond)
+
+	a, b := sc.objetivo(), sc.objetivo()
+	a.Servicio, b.Servicio = "a", "b"
+
+	p.Probe(context.Background(), a) // conexión 1
+	p.Probe(context.Background(), b) // conexión 2
+	if n := sc.conexiones.Load(); n != 2 {
+		t.Fatalf("el servidor vio %d conexiones, quería 2: los dos servicios comparten pool", n)
+	}
+
+	// Se cuelga la de "a": su probe reintenta por la conexión 3.
+	sc.colgarDesde.Store(1)
+	sc.colgarHasta.Store(1)
+	if got := p.Probe(context.Background(), a); !got.OK {
+		t.Fatalf("a: %+v", got)
+	}
+
+	// Y "b" tiene que seguir usando la suya, sin abrir ninguna.
+	if got := p.Probe(context.Background(), b); !got.OK {
+		t.Fatalf("b: %+v", got)
+	}
+	if n := sc.conexiones.Load(); n != 3 {
+		t.Errorf("el servidor vio %d conexiones, quería 3: renovar el pool de \"a\" le cerró la conexión a \"b\"", n)
+	}
+}
+
+// Al apagar, el ctx cancelado corta antes de reintentar: no se gasta una
+// conexión nueva para volver a fallar por lo mismo, y sobre todo no se tira el
+// pool del servicio. Se mide por lo segundo: si el pool se hubiera renovado, el
+// probe siguiente tendría que abrir una conexión.
+func TestConElContextoCanceladoNoSeReintenta(t *testing.T) {
+	sc := nuevoServidorColgable(t)
+	p := sc.prober(5 * time.Second)
+
+	if got := p.Probe(context.Background(), sc.objetivo()); !got.OK {
+		t.Fatalf("el primer probe falló: %+v", got)
+	}
+
+	sc.colgarDesde.Store(1)
+	ctx, cancelar := context.WithCancel(context.Background())
+	go func() { time.Sleep(100 * time.Millisecond); cancelar() }()
+	if got := p.Probe(ctx, sc.objetivo()); got.OK {
+		t.Fatal("OK = true con el contexto cancelado")
+	}
+
+	sc.colgarDesde.Store(0)
+	if got := p.Probe(context.Background(), sc.objetivo()); !got.OK {
+		t.Fatalf("el probe de después falló: %+v", got)
+	}
+	if n := sc.conexiones.Load(); n != 1 {
+		t.Errorf("el servidor vio %d conexiones, quería 1: se renovó el pool con el contexto ya cancelado", n)
+	}
+}
