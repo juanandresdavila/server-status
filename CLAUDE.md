@@ -127,16 +127,17 @@ a pagarlo con el próximo container ruidoso.
   algo del visor; no puede callarte un aviso de Telegram. Ese límite es lo que
   hace que la función sea tolerable.
 
-**Medición de egress IPv4 vs IPv6 (26/08/2026) — CON VEREDICTO, la unit sigue
-corriendo.** El 26/08 los probes salientes saltaron a **23 resets** contra una
-base de **0,31/día**. Todas las fallas de red del histórico son por IPv6, pero
+**Medición de egress IPv4 vs IPv6 (26/08/2026) — CERRADA el 18/09/2026.** El
+26/08 los probes salientes saltaron a **23 resets** contra una base de
+**0,31/día**. Todas las fallas de red del histórico son por IPv6, pero
 eso no prueba nada: el VPS sale siempre por IPv6 y **nunca se intentó por
 IPv4**, así que no hay contrafactual. `cmd/egress-probe` lo construye —
 factorial 2×2 de familia × reuso de conexión, más un brazo de cadencia de 30 s.
 
 - Plan y **regla de decisión pre-registrada** (escrita antes de los datos):
   `docs/superpowers/plans/2026-08-26-egress-ipv6-vs-ipv4.md`. La regla se aplica
-  sola: `egress-probe -analizar <jsonl>`.
+  sola: `go run ./cmd/egress-probe -analizar <jsonl>` (el binario ya no está
+  en el VPS).
 - **Veredicto, leído el 18/09/2026** sobre 33 000 ticks por brazo: **`h1-y-h2`**.
   Separan los dos ejes, y el reuso con mucha más fuerza que la familia (reuso
   p=1,2e-36, familia p=0,00012). Por tick fallan el 0,43 % de `v6-ka` y el
@@ -149,10 +150,12 @@ factorial 2×2 de familia × reuso de conexión, más un brazo de cadencia de 30
   cambio, un reset sobre una conexión reusada ya no llega a `probe_results`
   (queda solo como WARN en el journal), así que la comparación contra `v6-ka`
   dejó de tener sentido.
-- Corre como unit **aparte** (`deploy/egress-probe.service`, `make
-  egress-deploy`), salida en `/var/lib/egress-probe/medicion.jsonl` (281 MB al
-  18/09, no lo respalda nadie). **Es temporal: falta sacar la unit**, y bajar
-  el JSONL antes si se lo quiere conservar.
+- Corrió como unit **aparte** (`deploy/egress-probe.service`, `make
+  egress-deploy`) del 26/08 al **18/09/2026 a las 19:20 UTC**, cuando se
+  sacaron la unit y el binario del VPS. **El dato crudo quedó allá**:
+  `/var/lib/egress-probe/medicion.jsonl`, 281 831 809 bytes, que no respalda
+  nadie. Los archivos de `deploy/` y `make egress-deploy` siguen en el repo
+  por si hay que volver a medir.
 - 🚨 **El cambio de código iba DESPUÉS de la medición**, y así se hizo: si el
   resultado hubiera sido solo el reuso, forzar `tcp4` habría "funcionado"
   igual —por accidente, al reiniciar el pool— dejando la causa intacta.
