@@ -40,6 +40,12 @@ func New(clk clock.Clock, timeout time.Duration) *Prober {
 
 // NewConTransporte existe para los tests: un servidor HTTP/2 de prueba
 // necesita que el cliente confíe en su certificado.
+//
+// 🚨 El molde tiene que venir con TLSNextProto en nil, como lo deja
+// DefaultTransport.Clone(). Uno al que ya le pasaron http2.ConfigureTransport
+// trae ese mapa cargado, y entonces Clone se lo copia a todos los pools: los
+// clones comparten el http2.Transport con su pool de conexiones, con lo que
+// renovar() deja de renovar nada y no se entera nadie.
 func NewConTransporte(clk clock.Clock, timeout time.Duration, molde *http.Transport) *Prober {
 	return &Prober{
 		clk:     clk,
@@ -74,7 +80,12 @@ type Objetivo struct {
 // caso: una falla sobre una conexión que ya era nueva no se reintenta (sería
 // un reintento a ciegas, y duplicaría el tiempo del probe justo con el
 // servicio caído), y una respuesta HTTP, aunque sea un 500, es el servicio
-// contestando. En el peor caso un probe tarda dos veces el timeout.
+// contestando.
+//
+// ⚠️ El costo se paga por tick, no una sola vez: mientras un servicio siga
+// colgado, cada minuto gasta dos veces el timeout (20 s con los 10 s de
+// producción), abre una conexión nueva y deja un WARN. Y los probes corren
+// adentro del ciclo del minuto, así que esos 20 s le atrasan el resto del tick.
 func (p *Prober) Probe(ctx context.Context, o Objetivo) model.ProbeResult {
 	r := model.ProbeResult{TS: p.clk.Now(), Servicio: o.Servicio}
 
@@ -164,9 +175,9 @@ func (p *Prober) pool(servicio string) *http.Transport {
 }
 
 // renovar cambia el pool del servicio por uno vacío, así el reintento y los
-// ticks siguientes salen por una conexión nueva. Una conexión colgada con un
-// pedido en vuelo no se puede cerrar desde afuera: CloseIdleConnections cierra
-// lo que pueda y la colgada queda huérfana hasta que TCP la dé por muerta.
+// ticks siguientes salen por una conexión nueva. A la colgada la cierra
+// CloseIdleConnections —sobre HTTP/2 alcanza, porque el stream ya está
+// cancelado— y si pierde esa carrera la cierra el IdleConnTimeout de 90 s.
 func (p *Prober) renovar(servicio string, viejo *http.Transport) *http.Transport {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -424,7 +424,9 @@ a tocarlos todos cada vez que se agrega una.
   reintenta, y un 5xx tampoco. Cada reintento deja un WARN `probe: falló sobre
   una conexión reusada` en el journal: es el único rastro, porque a
   `probe_results` llega solo el segundo intento. El canal de comm-tool lleva
-  su propio `Transport`. Peor caso de un probe: dos veces `ProbeTimeout`.
+  su propio `Transport`. ⚠️ **El reintento se paga por tick, no una sola vez**:
+  mientras un servicio siga colgado son 20 s por minuto (dos veces
+  `ProbeTimeout`) adentro del ciclo, más una conexión nueva y un WARN cada vez.
 
 ## Este repo es público
 
