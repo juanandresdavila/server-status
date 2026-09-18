@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/juanandresdavila/server-status/internal/notify/commtool"
@@ -112,5 +114,42 @@ func TestSinCredencialesNoEstaConfigurado(t *testing.T) {
 	}
 	if !commtool.New("https://x", "K", "u").Configurado() {
 		t.Error("con las dos cosas dice NO estar configurado")
+	}
+}
+
+// El aviso no puede compartir el pool de conexiones del proceso. El 18/09/2026
+// una conexión HTTP/2 a comm.jadd.com.ar se quedó muda dentro de ese pool: el
+// probe dio timeout cuatro minutos seguidos y el aviso de la caída, que viajaba
+// por la MISMA conexión, también. Salió por el respaldo de Telegram de pura
+// suerte. Con un pool propio, lo que se trabe del lado del probe no se lleva
+// puesto el aviso.
+func TestNoReusaLasConexionesDelPoolCompartido(t *testing.T) {
+	var conexiones atomic.Int64
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"status":"sent"}`))
+	}))
+	srv.Config.ConnContext = func(ctx context.Context, _ net.Conn) context.Context {
+		conexiones.Add(1)
+		return ctx
+	}
+	srv.Start()
+	defer srv.Close()
+	defer http.DefaultTransport.(*http.Transport).CloseIdleConnections()
+
+	// Deja una conexión ociosa al mismo host en el pool compartido.
+	resp, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET por el cliente por defecto: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	c := commtool.New(srv.URL, "KEY", "u")
+	if err := c.MandarCon(context.Background(), "hola", "6:opened"); err != nil {
+		t.Fatalf("MandarCon: %v", err)
+	}
+
+	if n := conexiones.Load(); n != 2 {
+		t.Errorf("el servidor vio %d conexiones, quería 2: el aviso reusó la del pool compartido", n)
 	}
 }

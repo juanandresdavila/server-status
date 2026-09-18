@@ -25,10 +25,19 @@ type Canal struct {
 // New recibe el userID que comm-tool usa para resolver el contacto.
 // server-status no tiene tabla de usuarios: es un uuid fijo, generado una vez.
 // comm-tool nunca lo interpreta — es una invariante suya.
+//
+// El cliente lleva su propio Transport, y con él su propio pool de conexiones.
+// Con el http.DefaultTransport compartía la conexión a comm.jadd.com.ar con
+// cualquier otro que le pegara al mismo host desde este proceso: el 18/09/2026
+// esa conexión se quedó muda y el aviso de la caída se colgó junto con el
+// probe que la había detectado.
 func New(base, apiKey, userID string) *Canal {
 	return &Canal{
 		base: base, apiKey: apiKey, userID: userID,
-		http: &http.Client{Timeout: 15 * time.Second},
+		http: &http.Client{
+			Timeout:   15 * time.Second,
+			Transport: http.DefaultTransport.(*http.Transport).Clone(),
+		},
 	}
 }
 
