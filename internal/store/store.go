@@ -176,6 +176,39 @@ var migraciones = []string{
 		motivo    TEXT NOT NULL,
 		creada    INTEGER NOT NULL
 	) STRICT;`,
+
+	// ts y container también van a la tabla lateral, con un índice. En la FTS5
+	// son UNINDEXED, así que toda vista sin texto —la de entrada a /logs, el
+	// filtro por container, los ERROR de /events, el export— leía la tabla
+	// entera con su texto y la ordenaba antes de aplicar el tope. Medido el
+	// 22/09/2026 en el VPS sobre una copia de su base (1 446 050 filas), con
+	// el driver de Go: la vista por defecto tardaba 998 ms devolviera dos
+	// filas o cinco mil, el export de 30 días 4,4 s y el tope de 25 000 líneas
+	// 22,5 s. Con el índice la vista recorre la ventana de atrás para adelante
+	// y corta en el tope: 1,2 ms, 137 ms y 161 ms. La migración tardó 11,9 s
+	// ahí mismo y le suma ~87 MB a la base.
+	//
+	// Van acá y no en la FTS5 por la misma razón que el nivel en la migración
+	// 9: agregarle columnas obliga a reindexar el texto, y son filtros, no
+	// texto buscable. El índice lleva nivel y container para que el filtro se
+	// resuelva sin salir de él.
+	//
+	// El INSERT final es para las filas que el backfill de la 9 todavía no
+	// alcanzó: entran como INFO, que es lo que les daba el COALESCE que había
+	// antes en la consulta, y el backfill les pone el nivel real cuando llegue.
+	// Desde acá toda fila de logs tiene su fila lateral: la ingesta escribe las
+	// dos en la misma transacción y la retención borra las dos.
+	`ALTER TABLE log_niveles ADD COLUMN ts INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE log_niveles ADD COLUMN container TEXT NOT NULL DEFAULT '';
+
+	UPDATE log_niveles SET ts = l.ts, container = l.container
+	FROM logs l WHERE l.rowid = log_niveles.rowid;
+
+	INSERT INTO log_niveles (rowid, nivel, ts, container)
+	SELECT rowid, 'INFO', ts, container FROM logs
+	WHERE rowid NOT IN (SELECT rowid FROM log_niveles);
+
+	CREATE INDEX log_niveles_por_ts ON log_niveles(ts, nivel, container);`,
 }
 
 type Store struct{ db *sql.DB }
@@ -205,7 +238,12 @@ func (s *Store) SchemaVersion() (int, error) {
 	return v, err
 }
 
-func migrar(db *sql.DB) error {
+func migrar(db *sql.DB) error { return migrarHasta(db, len(migraciones)) }
+
+// migrarHasta aplica las migraciones que falten hasta la versión dada. Fuera
+// de migrar solo la usan los tests, para armar la base que una migración nueva
+// encuentra en producción.
+func migrarHasta(db *sql.DB, hasta int) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at INTEGER NOT NULL
@@ -223,7 +261,7 @@ func migrar(db *sql.DB) error {
 		return fmt.Errorf("la base está en la migración %d y el binario conoce %d", aplicadas, len(migraciones))
 	}
 
-	for i := aplicadas; i < len(migraciones); i++ {
+	for i := aplicadas; i < hasta; i++ {
 		version := i + 1
 		tx, err := db.Begin()
 		if err != nil {
@@ -746,7 +784,7 @@ func (s *Store) InsertLogs(ls []model.LineaLog) error {
 	// El nivel va en su tabla lateral, atado por el rowid que acaba de asignar
 	// el FTS5. Las dos escrituras van en la MISMA transacción: una línea sin
 	// su nivel quedaría invisible con cualquier filtro que no sea TRACE.
-	stmtNivel, err := tx.Prepare(`INSERT INTO log_niveles (rowid, nivel) VALUES (?,?)`)
+	stmtNivel, err := tx.Prepare(`INSERT INTO log_niveles (rowid, nivel, ts, container) VALUES (?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -765,7 +803,7 @@ func (s *Store) InsertLogs(ls []model.LineaLog) error {
 		if nivel == "" {
 			nivel = "INFO"
 		}
-		if _, err := stmtNivel.Exec(id, nivel); err != nil {
+		if _, err := stmtNivel.Exec(id, nivel, l.TS.Unix(), l.Container); err != nil {
 			return fmt.Errorf("insertar nivel de %s: %w", l.Container, err)
 		}
 	}
@@ -779,20 +817,36 @@ func (s *Store) InsertLogs(ls []model.LineaLog) error {
 // ítem y "TRACE y ERROR sin el medio" tiene que poder pedirse. La validación
 // vive en logs.Conjunto; con nada válido cae al default de la vista.
 func (s *Store) BuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) ([]model.LineaLog, error) {
-	q := selectLogs + ` WHERE l.ts <= ?`
+	q, args := consultaBuscarLogs(texto, container, niveles, desde, hasta, limite)
+	lineas, _, err := s.consultarLogs(q, args)
+	return lineas, err
+}
+
+// consultaBuscarLogs arma la consulta de BuscarLogs. Está aparte para que el
+// test pueda pedirle el plan a la MISMA consulta y no a una copia.
+//
+// Sin texto, la ventana y los filtros se resuelven sobre el índice
+// log_niveles_por_ts recorrido de atrás para adelante, y la FTS5 solo se toca
+// por rowid para las filas que entran en el tope. Con texto manda el MATCH,
+// igual que antes.
+//
+// El desempate por rowid ASC mantiene el mismo segundo en orden de llegada:
+// sin él, el índice lo devolvería agrupado por nivel y un stack trace se
+// leería desordenado. SQLite ordena solo los empates, así que sigue cortando
+// en el tope.
+func consultaBuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) (string, []any) {
+	q := selectLogs + ` WHERE n.ts <= ?`
 	args := []any{hasta.Unix()}
 
 	if !desde.IsZero() {
-		q += ` AND l.ts >= ?`
+		q += ` AND n.ts >= ?`
 		args = append(args, desde.Unix())
 	}
 	q, args = filtroLogs(q, args, texto, container, niveles)
 
-	q += ` ORDER BY l.ts DESC LIMIT ?`
+	q += ` ORDER BY n.ts DESC, n.rowid ASC LIMIT ?`
 	args = append(args, limite)
-
-	lineas, _, err := s.consultarLogs(q, args)
-	return lineas, err
+	return q, args
 }
 
 // MaxRowidLogs siembra el cursor del modo en vivo en la carga inicial de la
@@ -819,7 +873,7 @@ func (s *Store) MaxRowidLogs() (int64, error) {
 // Devuelve las líneas de la más nueva a la más vieja, igual que BuscarLogs,
 // para que la vista las pueda pegar arriba sin reordenar nada.
 func (s *Store) LogsDesdeRowid(texto, container string, niveles []string, desde int64, limite int) ([]model.LineaLog, int64, error) {
-	q := selectLogs + ` WHERE l.rowid > ?`
+	q := selectLogs + ` WHERE n.rowid > ?`
 	args := []any{desde}
 	q, args = filtroLogs(q, args, texto, container, niveles)
 
@@ -828,7 +882,7 @@ func (s *Store) LogsDesdeRowid(texto, container string, niveles []string, desde 
 	// noche— devuelve las últimas N y deja el cursor en la más nueva de esas:
 	// todo lo del medio se saltea y no vuelve nunca. Con ASC el cursor avanza
 	// pegado, y lo que no entró en esta tanda entra en el poll siguiente.
-	q += ` ORDER BY l.rowid ASC LIMIT ?`
+	q += ` ORDER BY n.rowid ASC LIMIT ?`
 	args = append(args, limite)
 
 	lineas, max, err := s.consultarLogs(q, args)
@@ -849,20 +903,21 @@ func (s *Store) LogsDesdeRowid(texto, container string, niveles []string, desde 
 	return lineas, max, nil
 }
 
-// COALESCE porque una fila insertada antes de la migración 9 todavía puede no
-// tener nivel si el backfill no llegó: se la trata como INFO en vez de hacerla
-// desaparecer.
+// La consulta sale de la tabla lateral y no de la FTS5: ahí están ts,
+// container y nivel con su índice (migración 13), y la FTS5 se toca por rowid
+// solo para traer el texto. Por eso el JOIN es interno y ya no hay COALESCE:
+// desde la migración 13 toda línea tiene su fila lateral.
 //
 // El rowid viene SIEMPRE. Antes había dos constantes, una con un 0 literal en
 // su lugar, y eso dejaba a la vista sin forma de referirse a una línea.
-const selectLogs = `SELECT l.linea, l.container, l.stream, l.ts, COALESCE(n.nivel, 'INFO'), l.rowid
-	      FROM logs l LEFT JOIN log_niveles n ON n.rowid = l.rowid`
+const selectLogs = `SELECT l.linea, n.container, l.stream, n.ts, n.nivel, n.rowid
+	      FROM log_niveles n JOIN logs l ON l.rowid = n.rowid`
 
 // LineaPorRowid trae una línea guardada por su id. Es lo que prellena el form
 // de una regla nueva. El bool es false cuando la línea ya no está: la
 // retención la puede haber podado entre que se pintó la vista y se hizo click.
 func (s *Store) LineaPorRowid(rowid int64) (model.LineaLog, bool, error) {
-	ls, _, err := s.consultarLogs(selectLogs+` WHERE l.rowid = ?`, []any{rowid})
+	ls, _, err := s.consultarLogs(selectLogs+` WHERE n.rowid = ?`, []any{rowid})
 	if err != nil || len(ls) == 0 {
 		return model.LineaLog{}, false, err
 	}
@@ -875,14 +930,14 @@ func (s *Store) LineaPorRowid(rowid int64) (model.LineaLog, bool, error) {
 // abajo esconde — y eso se lee como un bug del filtro, no de acá.
 func filtroLogs(q string, args []any, texto, container string, niveles []string) (string, []any) {
 	if container != "" {
-		q += ` AND l.container = ?`
+		q += ` AND n.container = ?`
 		args = append(args, container)
 	}
 	// Se filtra por IN y no por una comparación de orden porque en SQL el
 	// nivel es texto: 'ERROR' < 'INFO' alfabéticamente, al revés de lo que
 	// hace falta. Con los cuatro niveles el filtro no filtra nada y se omite.
 	if conjunto := logs.Conjunto(niveles); len(conjunto) < 4 {
-		q += ` AND COALESCE(n.nivel, 'INFO') IN (?` + strings.Repeat(",?", len(conjunto)-1) + `)`
+		q += ` AND n.nivel IN (?` + strings.Repeat(",?", len(conjunto)-1) + `)`
 		for _, n := range conjunto {
 			args = append(args, string(n))
 		}
@@ -976,9 +1031,10 @@ func (s *Store) CrearReglaNivel(r model.ReglaNivel) (int64, int, error) {
 	// migración 9 que el backfill todavía no alcanzó no tiene fila en
 	// log_niveles y un UPDATE no la tocaría. El preview la cuenta igual,
 	// porque sale de logs, así que con UPDATE el número confirmado sería más
-	// grande que el aplicado. Acá el upsert la crea.
-	res, err = tx.Exec(`INSERT INTO log_niveles (rowid, nivel)
-		SELECT l.rowid, ? FROM logs l`+donde+`
+	// grande que el aplicado. Acá el upsert la crea, con su ts y su container:
+	// sin ellos quedaría fuera de toda ventana de la vista.
+	res, err = tx.Exec(`INSERT INTO log_niveles (rowid, nivel, ts, container)
+		SELECT l.rowid, ?, l.ts, l.container FROM logs l`+donde+`
 		ON CONFLICT(rowid) DO UPDATE SET nivel = excluded.nivel`,
 		append([]any{r.Nivel}, args...)...)
 	if err != nil {
@@ -1040,18 +1096,18 @@ func (s *Store) BorrarReglaNivel(id int64) (int, error) {
 	reglas := reglasDe(quedan)
 
 	donde, args := dondeCoincide(patron, container)
-	filas, err := tx.Query(`SELECT l.rowid, l.linea, l.stream, l.container FROM logs l`+donde, args...)
+	filas, err := tx.Query(`SELECT l.rowid, l.ts, l.linea, l.stream, l.container FROM logs l`+donde, args...)
 	if err != nil {
 		return 0, err
 	}
 	type fila struct {
-		rowid                    int64
+		rowid, ts                int64
 		linea, stream, container string
 	}
 	var fs []fila
 	for filas.Next() {
 		var f fila
-		if err := filas.Scan(&f.rowid, &f.linea, &f.stream, &f.container); err != nil {
+		if err := filas.Scan(&f.rowid, &f.ts, &f.linea, &f.stream, &f.container); err != nil {
 			filas.Close()
 			return 0, err
 		}
@@ -1062,7 +1118,7 @@ func (s *Store) BorrarReglaNivel(id int64) (int, error) {
 		return 0, err
 	}
 
-	stmt, err := tx.Prepare(`INSERT INTO log_niveles (rowid, nivel) VALUES (?,?)
+	stmt, err := tx.Prepare(`INSERT INTO log_niveles (rowid, nivel, ts, container) VALUES (?,?,?,?)
 		ON CONFLICT(rowid) DO UPDATE SET nivel = excluded.nivel`)
 	if err != nil {
 		return 0, err
@@ -1070,7 +1126,7 @@ func (s *Store) BorrarReglaNivel(id int64) (int, error) {
 	defer stmt.Close()
 	for _, f := range fs {
 		nivel := logs.Nivelar(reglas, f.linea, f.stream, f.container)
-		if _, err := stmt.Exec(f.rowid, string(nivel)); err != nil {
+		if _, err := stmt.Exec(f.rowid, string(nivel), f.ts, f.container); err != nil {
 			return 0, err
 		}
 	}
@@ -1256,19 +1312,19 @@ func (s *Store) BackfillNiveles(nivelar func(linea, stream, container string) st
 	}
 
 	filas, err := s.db.Query(`
-		SELECT rowid, linea, stream, container FROM logs
+		SELECT rowid, ts, linea, stream, container FROM logs
 		WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`, ultimo, techo, lote)
 	if err != nil {
 		return 0, false, err
 	}
 	type fila struct {
-		rowid                    int64
+		rowid, ts                int64
 		linea, stream, container string
 	}
 	var fs []fila
 	for filas.Next() {
 		var f fila
-		if err := filas.Scan(&f.rowid, &f.linea, &f.stream, &f.container); err != nil {
+		if err := filas.Scan(&f.rowid, &f.ts, &f.linea, &f.stream, &f.container); err != nil {
 			filas.Close()
 			return 0, false, err
 		}
@@ -1292,7 +1348,7 @@ func (s *Store) BackfillNiveles(nivelar func(linea, stream, container string) st
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT INTO log_niveles (rowid, nivel) VALUES (?,?)
+	stmt, err := tx.Prepare(`INSERT INTO log_niveles (rowid, nivel, ts, container) VALUES (?,?,?,?)
 		ON CONFLICT(rowid) DO UPDATE SET nivel = excluded.nivel`)
 	if err != nil {
 		return 0, false, err
@@ -1300,7 +1356,7 @@ func (s *Store) BackfillNiveles(nivelar func(linea, stream, container string) st
 	defer stmt.Close()
 
 	for _, f := range fs {
-		if _, err := stmt.Exec(f.rowid, nivelar(f.linea, f.stream, f.container)); err != nil {
+		if _, err := stmt.Exec(f.rowid, nivelar(f.linea, f.stream, f.container), f.ts, f.container); err != nil {
 			return 0, false, err
 		}
 	}

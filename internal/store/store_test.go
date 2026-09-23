@@ -71,8 +71,8 @@ func TestUltimaMigracionAplicada(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 12 {
-		t.Errorf("versión = %d, quería 12", v)
+	if v != 13 {
+		t.Errorf("versión = %d, quería 13", v)
 	}
 }
 
@@ -1432,12 +1432,172 @@ func TestLaReglaAlcanzaALasFilasSinNivel(t *testing.T) {
 		t.Fatalf("preview %d, filas %d, quería 1 y 1", previo, filas)
 	}
 
-	got, err := s.BuscarLogs("", "", []string{"TRACE"}, time.Time{}, base.Add(time.Hour), 10)
+	// Con desde y con container: la fila que crea el upsert tiene que traer
+	// también su ts y su container, o queda fuera de toda ventana y de todo
+	// filtro aunque tenga nivel.
+	got, err := s.BuscarLogs("", "kong", []string{"TRACE"}, base.Add(-time.Minute), base.Add(time.Hour), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].Linea != "ruido de la sonda" {
 		t.Errorf("got = %+v, quería la línea sin nivel ya en TRACE", got)
+	}
+}
+
+// Lo mismo por el lado del backfill, que también crea la fila lateral cuando
+// no estaba.
+func TestElBackfillCreaLaFilaLateralCompleta(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	if err := s.InsertLogs(lineas(base, "kong", "una", "dos")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OlvidarNivelParaTest(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReiniciarBackfillParaTest(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		_, listo, err := s.BackfillNiveles(func(l, st, c string) string { return "ERROR" }, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listo {
+			break
+		}
+	}
+
+	got, err := s.BuscarLogs("", "kong", []string{"ERROR"}, base.Add(-time.Minute), base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Errorf("got = %+v, quería las dos líneas de kong en ERROR", got)
+	}
+}
+
+// El motivo de la migración 13. Sin texto, la vista tiene que recorrer el
+// índice por fecha y cortar en el tope, no leer la tabla entera y ordenarla.
+// Medido el 22/09/2026 en el VPS sobre una copia de su base (1 446 050
+// filas): la consulta vieja tardaba ~1 s devolviera dos filas o cinco mil, y
+// eso lo pagaban /logs, /events y el export.
+//
+// Se mira el plan y no un tiempo porque un tiempo en CI no prueba nada. Y el
+// plan de una base vacía vale: ni la base de test ni la del VPS tienen
+// estadísticas de ANALYZE, así que el planificador decide con las mismas
+// heurísticas en las dos.
+func TestLaVistaSinTextoUsaElIndicePorFecha(t *testing.T) {
+	s := abrir(t)
+	hasta := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	todos := []string{"TRACE", "INFO", "WARN", "ERROR"}
+
+	casos := []struct {
+		nombre    string
+		container string
+		niveles   []string
+		desde     time.Time
+	}{
+		{"la vista por defecto", "", nil, hasta.Add(-24 * time.Hour)},
+		{"filtrada por container", "caddy", nil, hasta.Add(-24 * time.Hour)},
+		{"solo ERROR, lo que pide /events", "", []string{"ERROR"}, hasta.Add(-24 * time.Hour)},
+		{"todos los niveles", "", todos, hasta.Add(-24 * time.Hour)},
+		{"sin desde", "", nil, time.Time{}},
+	}
+	for _, c := range casos {
+		plan, err := s.PlanDeBuscarLogs("", c.container, c.niveles, c.desde, hasta, 5000)
+		if err != nil {
+			t.Fatalf("%s: %v", c.nombre, err)
+		}
+		if !strings.Contains(plan, "log_niveles_por_ts") {
+			t.Errorf("%s: no usa el índice por fecha:\n%s", c.nombre, plan)
+		}
+		if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+			t.Errorf("%s: ordena el resultado entero en vez de cortar en el tope:\n%s", c.nombre, plan)
+		}
+	}
+}
+
+// Dentro del mismo segundo las líneas salen en el orden en que llegaron, que
+// es como se lee un stack trace o un error de Postgres de varias líneas. La
+// consulta vieja lo hacía sin decirlo; con el índice por (ts, nivel,
+// container) se perdería —el mismo segundo saldría agrupado por nivel— y por
+// eso ahora está dicho.
+func TestElMismoSegundoSaleEnOrdenDeLlegada(t *testing.T) {
+	s := abrir(t)
+	base := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	ls := []model.LineaLog{
+		{TS: base, Container: "x", Stream: "stderr", Linea: "panic: algo", Nivel: "ERROR"},
+		{TS: base, Container: "x", Stream: "stderr", Linea: "goroutine 1", Nivel: "INFO"},
+		{TS: base, Container: "x", Stream: "stderr", Linea: "main.go:12", Nivel: "WARN"},
+		{TS: base.Add(time.Second), Container: "x", Stream: "stdout", Linea: "despues", Nivel: "INFO"},
+	}
+	if err := s.InsertLogs(ls); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.BuscarLogs("", "", []string{"TRACE", "INFO", "WARN", "ERROR"}, time.Time{}, base.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var orden []string
+	for _, l := range got {
+		orden = append(orden, l.Linea)
+	}
+	quiero := []string{"despues", "panic: algo", "goroutine 1", "main.go:12"}
+	if !reflect.DeepEqual(orden, quiero) {
+		t.Errorf("orden = %q, quería %q", orden, quiero)
+	}
+}
+
+// La migración 13 copia ts y container a la tabla lateral de las filas que ya
+// estaban, y le crea la suya a la que no tenía —una que el backfill de la 9
+// todavía no alcanzó— como INFO, que es lo que le daba el COALESCE de antes.
+// Sin eso, esa línea desaparecería del panel.
+func TestLaMigracion13LlevaTsYContainerALasFilasQueYaEstaban(t *testing.T) {
+	ruta := filepath.Join(t.TempDir(), "test.db")
+	viejo, err := store.AbrirEnVersionParaTest(ruta, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	if err := viejo.ExecParaTest(`INSERT INTO logs (rowid, linea, container, stream, ts)
+		VALUES (1, 'con nivel', 'kong', 'stdout', ?), (2, 'sin nivel', 'caddy', 'stdout', ?)`,
+		base.Unix(), base.Add(time.Second).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := viejo.ExecParaTest(`INSERT INTO log_niveles (rowid, nivel) VALUES (1, 'WARN')`); err != nil {
+		t.Fatal(err)
+	}
+	viejo.Close()
+
+	s, err := store.Open(ruta)
+	if err != nil {
+		t.Fatalf("Open con la migración 13: %v", err)
+	}
+	defer s.Close()
+
+	todos := []string{"TRACE", "INFO", "WARN", "ERROR"}
+	got, err := s.BuscarLogs("", "", todos, base.Add(-time.Minute), base.Add(time.Minute), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("volvieron %d líneas, quería 2: %+v", len(got), got)
+	}
+	if got[0].Linea != "sin nivel" || got[0].Nivel != "INFO" || got[0].Container != "caddy" {
+		t.Errorf("primera = %+v, quería 'sin nivel' de caddy en INFO", got[0])
+	}
+	if got[1].Linea != "con nivel" || got[1].Nivel != "WARN" || got[1].Container != "kong" {
+		t.Errorf("segunda = %+v, quería 'con nivel' de kong en WARN", got[1])
+	}
+
+	soloCaddy, err := s.BuscarLogs("", "caddy", todos, base.Add(-time.Minute), base.Add(time.Minute), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(soloCaddy) != 1 || soloCaddy[0].Linea != "sin nivel" {
+		t.Errorf("filtrando por caddy = %+v, quería solo 'sin nivel'", soloCaddy)
 	}
 }
 

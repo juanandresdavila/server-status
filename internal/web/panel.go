@@ -905,9 +905,10 @@ func horasDe(r *http.Request) int {
 // había antes tapaba justo lo que uno iba a buscar: una ventana de 24 h de un
 // host con un container ruidoso se recortaba a menos de cinco horas.
 //
-// ⚠️ `ts` es UNINDEXED en la tabla FTS5 `logs`, así que una búsqueda sin texto
-// es un scan completo de ~800 000 filas y subir el tope lo empeora. Está
-// medido y asumido; el arreglo de fondo es otro índice, no un tope más bajo.
+// Hasta la migración 13 una búsqueda sin texto leía la tabla entera y subir el
+// tope la empeoraba: el de 25 000 tardaba 22,5 s en el VPS. Con el índice por
+// fecha cuesta 161 ms, y lo que pesa en un tope alto pasa a ser el HTML: 25 000
+// líneas son ~15 MB.
 var topesVista = []int{5000, 10000, 25000}
 
 // topeExport es un PISO, no un techo: el export es un archivo que se abre en
