@@ -728,7 +728,7 @@ func NuevoPanel(d Datos, zona *time.Location, clk clock.Clock, enlaces ...Enlace
 		}
 	})
 
-	return mux
+	return Comprimir(mux)
 }
 
 // Ventana es el rango de tiempo pedido, ya resuelto.
