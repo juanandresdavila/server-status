@@ -65,10 +65,11 @@ func plantillasCon(idioma string) *template.Template {
 		// Sin zona fija sería t.Local(), y el VPS corre en Etc/UTC: el panel venía
 		// mostrando UTC mientras uno lo leía como hora argentina. La zona sale de
 		// la config, que es la misma que usa el resumen diario.
-		"hora": func(t time.Time, loc *time.Location) string { return enZona(t, loc).Format("02/01/2006 15:04") },
-		"en":   enZona,
-		"t":    func(clave string) string { return tr(idioma, clave) },
-		"lang": func() string { return idioma },
+		"hora":  func(t time.Time, loc *time.Location) string { return enZona(t, loc).Format("02/01/2006 15:04") },
+		"en":    enZona,
+		"t":     func(clave string) string { return tr(idioma, clave) },
+		"lang":  func() string { return idioma },
+		"asset": urlAsset,
 	}).ParseFS(plantillas, "plantillas/nav.html", "plantillas/panel.html",
 		"plantillas/logs.html", "plantillas/tail.html", "plantillas/eventos.html",
 		"plantillas/regla-nueva.html", "plantillas/reglas.html"))
@@ -180,7 +181,7 @@ func NuevoPanel(d Datos, zona *time.Location, clk clock.Clock, enlaces ...Enlace
 	if err != nil {
 		panic("los assets embebidos no tienen el subdirectorio 'assets': " + err.Error())
 	}
-	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(sub)))
+	mux.Handle("GET /assets/", cachearAssets(http.StripPrefix("/assets/", http.FileServerFS(sub))))
 
 	mux.HandleFunc("GET /logs/tail", func(w http.ResponseWriter, r *http.Request) {
 		c := r.URL.Query().Get("container")

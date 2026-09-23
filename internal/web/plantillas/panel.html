@@ -176,7 +176,7 @@
   {{ end }}
 </table>
 
-<script src="/assets/echarts.min.js"></script>
+<script src="{{ asset "echarts.min.js" }}"></script>
 <script>
   const oscuro = matchMedia('(prefers-color-scheme: dark)').matches
   // Memoria y disco tienen dos variantes; la unidad elegida vive en
