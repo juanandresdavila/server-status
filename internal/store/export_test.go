@@ -1,5 +1,11 @@
 package store
 
+import (
+	"database/sql"
+	"strings"
+	"time"
+)
+
 // Helpers que solo existen para los tests. Viven en un archivo _test.go a
 // propósito: así no entran al binario ni ensucian la API del store, que es lo
 // que pasaría si se agregaran métodos de producción para poder testear.
@@ -32,4 +38,49 @@ func (s *Store) ReiniciarBackfillParaTest() error {
 func (s *Store) OlvidarNivelParaTest(rowid int64) error {
 	_, err := s.db.Exec(`DELETE FROM log_niveles WHERE rowid = ?`, rowid)
 	return err
+}
+
+// AbrirEnVersionParaTest abre una base aplicando las migraciones SOLO hasta
+// version, para poder armar el estado que una migración nueva encuentra en
+// producción. Después se cierra y se reabre con Open, que aplica el resto.
+func AbrirEnVersionParaTest(ruta string, version int) (*Store, error) {
+	db, err := sql.Open("sqlite", ruta+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := migrarHasta(db, version); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{db: db}, nil
+}
+
+// ExecParaTest escribe SQL crudo. Existe para cargar una base con el esquema
+// de una versión vieja, donde los métodos del store ya no sirven porque
+// escriben columnas que esa versión todavía no tiene.
+func (s *Store) ExecParaTest(q string, args ...any) error {
+	_, err := s.db.Exec(q, args...)
+	return err
+}
+
+// PlanDeBuscarLogs devuelve el EXPLAIN QUERY PLAN de la MISMA consulta que
+// arma BuscarLogs, renglón por renglón.
+func (s *Store) PlanDeBuscarLogs(texto, container string, niveles []string, desde, hasta time.Time, limite int) (string, error) {
+	q, args := consultaBuscarLogs(texto, container, niveles, desde, hasta, limite)
+	filas, err := s.db.Query(`EXPLAIN QUERY PLAN `+q, args...)
+	if err != nil {
+		return "", err
+	}
+	defer filas.Close()
+	var out []string
+	for filas.Next() {
+		var id, padre, nada int
+		var detalle string
+		if err := filas.Scan(&id, &padre, &nada, &detalle); err != nil {
+			return "", err
+		}
+		out = append(out, detalle)
+	}
+	return strings.Join(out, "\n"), filas.Err()
 }
