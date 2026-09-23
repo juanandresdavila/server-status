@@ -127,6 +127,25 @@ a pagarlo con el próximo container ruidoso.
   algo del visor; no puede callarte un aviso de Telegram. Ese límite es lo que
   hace que la función sea tolerable.
 
+**Tanda del 22/09/2026: el panel lento.** Juan: «anda muy lento el filtro de
+los logs, se siente en general lento». Medido en el navegador, `/logs` tardaba
+4,4 s: 3,1 s hasta el primer byte y 1,1 s bajando 1 MB de HTML. Tres causas,
+tres commits, cada una medida antes y después:
+
+- **La consulta leía la tabla entera** (`ts` y `container` son UNINDEXED en la
+  FTS5): ~1 s en el VPS devolviera dos filas o cinco mil, 22,5 s el tope de
+  25 000. La **migración 13** los lleva a `log_niveles` con el índice
+  `(ts, nivel, container)` y la consulta sale de ahí: 1,2 ms y 161 ms. Las
+  respuestas de 10 rutas dieron idénticas byte a byte con el código viejo.
+  Con texto sigue mandando el MATCH y no cambió de forma apreciable: `login`
+  sobre 30 días dio 1,53 s antes y 1,78 s después en el VPS (en la Mac, 267
+  y 223 ms), porque matchea decenas de miles de líneas y hay que ordenarlas.
+- **Nada salía comprimido**: `web.Comprimir` (gzip) envuelve al panel y NO al
+  tail, que es SSE. El HTML de logs comprime de 13 a 25 veces.
+- **echarts.min.js (1 MB) no tenía con qué cachearse** y se bajaba en cada
+  visita a `/`. Ahora se pide con `{{ asset "echarts.min.js" }}`, que le pone
+  el hash del contenido en la URL, y esa URL es inmutable por un año.
+
 **Medición de egress IPv4 vs IPv6 (26/08/2026) — CERRADA el 18/09/2026.** El
 26/08 los probes salientes saltaron a **23 resets** contra una base de
 **0,31/día**. Todas las fallas de red del histórico son por IPv6, pero
@@ -286,6 +305,26 @@ para siempre — va en la misma transacción y tiene test. **Nunca
 se edita una ya aplicada**: para cambiar el esquema se agrega otra al final. El
 runner se niega a arrancar si la base está más adelante que el binario — eso es
 alguien deployando para atrás.
+
+**Desde la migración 13, `log_niveles` también guarda `ts` y `container`, y
+toda fila de `logs` tiene la suya**: la vista sale de esa tabla con un JOIN
+interno, así que una línea sin fila lateral no aparece. La ingesta escribe las
+dos en la misma transacción, y los tres upserts (regla nueva, borrar regla,
+backfill) crean la fila completa si no estaba. La 13 tarda **11,9 s** sobre la
+base del VPS y le suma ~87 MB.
+
+⚠️ **Volver a un binario anterior a la 13** no arranca («la base está en la
+migración 13»). Con el servicio parado:
+
+```sql
+DROP INDEX log_niveles_por_ts;
+ALTER TABLE log_niveles DROP COLUMN container;
+ALTER TABLE log_niveles DROP COLUMN ts;
+DELETE FROM schema_migrations WHERE version = 13;
+```
+
+Hay que sacar también las columnas, no solo el registro: si no, el próximo
+deploy hacia adelante vuelve a correr la 13 y el `ADD COLUMN` falla.
 
 Un solo test afirma el número exacto de migración (`TestUltimaMigracionAplicada`).
 Los demás solo verifican que se aplicaron: repetir el número en tres tests obliga
